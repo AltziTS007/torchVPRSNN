@@ -119,11 +119,8 @@ def weighted_assignment_inference(S_Q, S_R, gamma=0.02):
     # --------------------------------------------------------
     # Inference / Scoring so far
     # --------------------------------------------------------
-    # At this point, for a standard weighted voting (without Step 3), 
     # the score for place l would be: sum_i (S^Q_i * S''_i,l)
-    # But Step 3 is a "normalization step" on the FINAL score for place l.
     
-    # Let's compute the intermediate scores first.
     # scores_intermediate: [n_query, n_classes]
     # S_Q: [n_query, n_exc]
     # S_double_prime: [n_exc, n_classes]
@@ -145,7 +142,6 @@ def weighted_assignment_inference(S_Q, S_R, gamma=0.02):
     # For each query, we identify active neurons (S^Q > 0).
     # Then sum S^R_{m,l} for those active m.
     
-    # We can do this with matrix multiplication.
     # Indicator of active neurons in query: I_Q [n_query, n_exc]
     I_Q = (S_Q > 0).float()
     
