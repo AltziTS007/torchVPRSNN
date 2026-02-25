@@ -34,14 +34,10 @@ import numpy as np
 import datetime
 import json
 
-# ============================================================
-# NEW IMPORTS
-# ============================================================
 from encoders import RateEncoder
 from networks import torchVPRSNN
 from utils import Logger, plot_stdp_monitor
 
-# VPR-specific evaluation utilities
 from vprsnn_evaluation import (
     get_nordland_loaders, 
     get_standard_assignments, 
@@ -243,7 +239,7 @@ def main():
     S_Q = S_Q_cpu.to(DEVICE)
 
     # --------------------------------------------------------
-    # NEW: Weighted & Probability-based Assignments
+    # Weighted & Probability-based Assignments
     # --------------------------------------------------------
     print("\n--- Computing Weighted Neuronal Assignments ---")
     
@@ -277,7 +273,7 @@ def main():
         vis_train_ds = vis_train_ds.datasets[0]
 
     methods = [
-        ("Standard", sim_matrix, preds, acc),         # Standard
+        ("Standard", sim_matrix, preds, acc),                                                            # Standard
         ("Weighted", scores_weighted.cpu().numpy(), scores_weighted.argmax(dim=1).cpu().numpy(), acc_w), # Weighted
         ("Weighted+Prob", scores_prob.cpu().numpy(), scores_prob.argmax(dim=1).cpu().numpy(), acc_p)     # Weighted+Prob
     ]
@@ -324,16 +320,13 @@ def main():
             targets=targets,
             save_path=os.path.join(method_dir, "qualitative.png")
         )
-        # Also plot assignments logic just once or copy? 
-        # Since assignments are common (Standard Training), we saved them in root.
     
     # --------------------------------------------------------
     # 7. Final Summary Table
     # --------------------------------------------------------
     print("\n" + "="*80)
     
-    # Check if Accuracy == P@100R for ALL methods (or ANY? User: "if accuracy is the same as p@100r remove it")
-    # I'll check if they are close for all methods. if so, drop Acc.
+    # Check if Accuracy == P@100R for ALL methods
     redundant_acc = all(abs(m["Accuracy"] - m["P@100R"]) < 0.1 for m in final_metrics)
     
     if redundant_acc:
@@ -356,3 +349,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

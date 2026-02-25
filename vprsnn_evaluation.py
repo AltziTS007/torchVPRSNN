@@ -184,10 +184,7 @@ def evaluate_vpr(net, encoder, loader, assignments, n_classes, device="cpu"):
     
     # Stack all spike counts
     all_spike_counts = torch.cat(all_spike_counts_list, dim=0)
-    all_spike_counts = all_spike_counts.to(device) # Move back to device if needed? Or keep on CPU?
-    # WNA inference expects S_Q on device. Let's move it to device there or here. 
-    # For now, let's keep it on CPU to avoid OOM if large, but WNA will likely need it on GPU. 
-    # Actually WNA inference starts with `S_Q.to(device)`. So returning CPU tensor is fine.
+    all_spike_counts = all_spike_counts.to(device)
 
     similarity_matrix = np.array(similarity_matrix)
 
@@ -214,11 +211,6 @@ def evaluate_vpr(net, encoder, loader, assignments, n_classes, device="cpu"):
     print("--------------------------------")
 
     # Stack all spike counts to form S_Q [n_query, n_exc]
-    # We need to collect them during the loop or just return meaningful data
-    # Ideally, we should have collected them. 
-    # Let's assume we didn't store them in `similarity_matrix` loop.
-    # Wait, I didn't store them in the original code above.
-    # I need to modify the loop to store `exc_counts`!
     
     return accuracy, all_preds, all_targets, similarity_matrix, prob_matrix, all_spike_counts
 
@@ -312,8 +304,6 @@ def plot_recall_at_n(similarity_matrix, targets, n_values=[1, 5, 10, 20], save_p
     
     for n in n_values:
         # recallAtK expects S and GT. It does NOT support matching='single' 
-        # but it treats columns as queries and calculates if match is in top K.
-        # This is exactly what we want.
         req_recall = vpr_metrics.recallAtK(S_in, GThard, K=n)
         recalls.append(req_recall * 100.0) # Convert to percentage
         print(f"Recall@{n}: {req_recall * 100.0:.2f}%")
@@ -797,6 +787,7 @@ def get_nordland_loaders(train_path, test_path, batch_size=64, max_samples=None,
     
     # Return num_classes based on the logical places (min_len)
     return train_loader, test_loader, min_len
+
 
 
 
