@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -u
 
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
 echo "============================================================"
 echo "      State Isolation (Temporal Spill-over) Ablation        "
 echo "============================================================"
@@ -17,7 +19,7 @@ echo "============================================================"
 MAX_SAMPLES=${1:-100}
 
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
-LOG_DIR="ablation_logs"
+LOG_DIR="$ROOT_DIR/ablation_logs"
 mkdir -p "$LOG_DIR"
 
 LOG_FILE="${LOG_DIR}/state_isolation_ablation_${TIMESTAMP}.log"
@@ -28,8 +30,8 @@ echo "------------------------------------------------------------" | tee -a "$L
 
 echo "" | tee -a "$LOG_FILE"
 echo ">>> RUN 1: Healthy Network + State Isolation ON (Reset) <<<" | tee -a "$LOG_FILE"
-echo "Command: python snn_model.py --max-samples $MAX_SAMPLES --save-results true --experiment-name healthy_reset" | tee -a "$LOG_FILE"
-python snn_model.py \
+echo "Command: python "$ROOT_DIR"/core/snn_model.py --max-samples $MAX_SAMPLES --save-results true --experiment-name healthy_reset" | tee -a "$LOG_FILE"
+python "$ROOT_DIR"/core/snn_model.py \
     --max-samples "$MAX_SAMPLES" \
     --save-results true \
     --experiment-name healthy_reset \
@@ -37,8 +39,8 @@ python snn_model.py \
 
 echo "" | tee -a "$LOG_FILE"
 echo ">>> RUN 2: Healthy Network + State Isolation OFF (Spill-over) <<<" | tee -a "$LOG_FILE"
-echo "Command: python snn_model.py --max-samples $MAX_SAMPLES --simulate-spillover --save-results true --experiment-name healthy_spillover" | tee -a "$LOG_FILE"
-python snn_model.py \
+echo "Command: python "$ROOT_DIR"/core/snn_model.py --max-samples $MAX_SAMPLES --simulate-spillover --save-results true --experiment-name healthy_spillover" | tee -a "$LOG_FILE"
+python "$ROOT_DIR"/core/snn_model.py \
     --max-samples "$MAX_SAMPLES" \
     --simulate-spillover \
     --save-results true \

@@ -1,3 +1,7 @@
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "core"))
+
 import torch
 import numpy as np
 from torch.utils.data import DataLoader
@@ -140,7 +144,7 @@ def run_ablation_for_seed(seed, max_samples=100, device="cuda", data_dir="ORC"):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run Table IV ablation (Oxford)")
-    parser.add_argument("--data-dir", type=str, default="ORC", help="Path to Oxford RobotCar dataset root")
+    parser.add_argument("--data-dir", type=str, default=os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "ORC"), help="Path to Oxford RobotCar dataset root")
     args = parser.parse_args()
 
     seeds = range(16, 26) # 10 seeds to match Table IV

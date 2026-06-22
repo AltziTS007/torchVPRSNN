@@ -1,3 +1,7 @@
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "core"))
+
 #!/usr/bin/env python3
 """Extract AUC from Weighted+Prob PR images and plot AUC vs MAX_SAMPLES.
 

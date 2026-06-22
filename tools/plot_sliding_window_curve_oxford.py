@@ -1,9 +1,14 @@
+import sys
+import os
+ROOT_DIR_HACK = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "core"))
+
 import os
 import re
 import matplotlib.pyplot as plt
 
 def main():
-    directory = "sliding_window_full_results_oxford"
+    directory = os.path.join(ROOT_DIR_HACK, "sliding_window_full_results_oxford")
     
     chunk_sizes = []
     r100p_means = []

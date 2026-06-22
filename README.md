@@ -45,7 +45,7 @@ To run the end-to-end experiment—which includes data loading, STDP training, n
 
 ```bash
 conda activate snntorch
-python snn_model.py
+python core/snn_model.py
 ```
 
 ### Experiment Outputs
@@ -67,24 +67,24 @@ This repository is structured to allow full reproducibility of the results repor
 This evaluates the robustness of the VPR system against velocity mismatches, reverse traversals, dropped frames, and route deviations.
 - **Nordland Dataset**:
   ```bash
-  python run_table_iv_real.py --data-dir nordland_clean
+  python experiments/run_table_iv_real.py --data-dir nordland_clean
   ```
 - **Oxford RobotCar Dataset**:
   ```bash
-  python run_table_iv_oxford.py --data-dir ORC
+  python experiments/run_table_iv_oxford.py --data-dir ORC
   ```
 
 ### 2. Table V: Sequential Aggregation (R@100P vs. Window Size $k$)
 This evaluates the impact of varying the sliding window size on overall recall performance.
 ```bash
-python run_table_v.py --data-dir nordland_clean
+python experiments/run_table_v.py --data-dir nordland_clean
 ```
 
 ### 3. Figure: Sliding Window (Chunked) Protocol Curves
 To generate the performance degradation curves under varying spatial chunk sizes (comparing AUC-PR across datasets):
 ```bash
-bash run_sliding_window_full_curve.sh
-bash run_sliding_window_full_curve_oxford.sh
+bash experiments/run_sliding_window_full_curve.sh
+bash experiments/run_sliding_window_full_curve_oxford.sh
 python plot_combined_auc.py
 ```
 *Output: Generates `ablation_sliding_window_combined_auc.png`.*
@@ -92,28 +92,28 @@ python plot_combined_auc.py
 ### 4. Figure: Timestep (Latency/Energy) Ablation
 To generate the Pareto frontier curves evaluating the optimal deployment sweet spot (latency vs. performance):
 ```bash
-bash run_ablation_tsteps.sh
+bash experiments/run_ablation_tsteps.sh
 ```
 *Output: Generates `ablation_latency_vs_r100p.png` and `ablation_energy_vs_r100p.png`.*
 
 ### 5. 15-Seed Baseline Statistical Sweeps
 To ensure reproducibility and publication-ready statistical significance, perform $N$-seed sweeps (e.g., 15 repetitions) and automatically extract the Mean ± Std Dev performance. This protocol establishes the robust 77.93% ± 3.97% mean R@100P baseline for the Probability-Based assignment (Table III).
 ```bash
-bash run_max_samples_benchmark.sh
-python extract_sweep_stats.py --start "YYYY-MM-DD HH:MM:SS" --end "YYYY-MM-DD HH:MM:SS"
+bash experiments/run_max_samples_benchmark.sh
+python tools/extract_sweep_stats.py --start "YYYY-MM-DD HH:MM:SS" --end "YYYY-MM-DD HH:MM:SS"
 ```
 
 ### 6. Table VI: State Isolation (Within-System Ablation)
 To reproduce the explicit ablation of the state-isolation mechanism (Temporal Spill-over vs. Healthy Reset):
 ```bash
-bash run_ablation_state_isolation.sh
+bash experiments/run_ablation_state_isolation.sh
 ```
 
 ### 7. Impact of Neuronal Assignment Strategy (Boxplots)
 To aggregate and visualize the raw `Standard`, `Weighted`, and `Weighted+Prob` table outputs across your multi-seed runs (Figure 1), use the table extraction pipeline:
 ```bash
-python extract_tables_by_time.py --start "YYYY-MM-DD HH:MM:SS" --end "YYYY-MM-DD HH:MM:SS"
-python plot_r100p_from_extracted_tables.py --in-file results/tables_...txt --out r100p_boxplot.png
+python tools/extract_tables_by_time.py --start "YYYY-MM-DD HH:MM:SS" --end "YYYY-MM-DD HH:MM:SS"
+python tools/plot_r100p_from_extracted_tables.py --in-file results/tables_...txt --out r100p_boxplot.png
 ```
 *Output: Generates statistical boxplots comparing the assignment strategies and saves a `r100p_summary.txt` with exact mean values.*
 

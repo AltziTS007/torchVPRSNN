@@ -1,3 +1,8 @@
+import sys
+import os
+ROOT_DIR_HACK = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "core"))
+
 import os
 import re
 import matplotlib.pyplot as plt
@@ -54,8 +59,8 @@ def get_results(directory):
     return results
 
 def main():
-    res_nordland = get_results("tsteps_ablation_results")
-    res_oxford = get_results("tsteps_ablation_results_oxford")
+    res_nordland = get_results(os.path.join(ROOT_DIR_HACK, "tsteps_ablation_results"))
+    res_oxford = get_results(os.path.join(ROOT_DIR_HACK, "tsteps_ablation_results_oxford"))
 
     # Filter to common t_steps if needed, or just plot what exists. 
     # Let's plot what exists for each.

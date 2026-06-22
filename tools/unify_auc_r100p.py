@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from __future__ import annotations
 """Unified workflow to produce AUC-PR and R@100P artifacts for one time window.
 
 This script orchestrates:
@@ -9,8 +10,9 @@ This script orchestrates:
 It can also produce a side-by-side combined figure from the two generated plots.
 """
 
-from __future__ import annotations
-
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "core"))
 import argparse
 import os
 import subprocess

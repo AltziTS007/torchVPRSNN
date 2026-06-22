@@ -1,3 +1,7 @@
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "core"))
+
 import torch
 import numpy as np
 import argparse
@@ -68,7 +72,7 @@ def run_table_v_for_seed(seed, max_samples=100, device="cuda", data_dir="nordlan
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run Table V ablation (Nordland)")
-    parser.add_argument("--data-dir", type=str, default="nordland_clean", help="Path to Nordland dataset root")
+    parser.add_argument("--data-dir", type=str, default=os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "nordland_clean"), help="Path to Nordland dataset root")
     args = parser.parse_args()
 
     seeds = range(16, 31) # 15 networks as specified in Table V

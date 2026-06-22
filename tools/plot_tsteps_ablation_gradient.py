@@ -1,3 +1,8 @@
+import sys
+import os
+ROOT_DIR_HACK = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "core"))
+
 import os
 import re
 import matplotlib.pyplot as plt
@@ -104,8 +109,8 @@ def plot_gradient_dataset(directory, title_suffix, out_prefix):
     print(f"Generated gradient plots for {title_suffix}")
 
 def main():
-    plot_gradient_dataset("tsteps_ablation_results", "(Nordland)", "ablation_gradient_nordland")
-    plot_gradient_dataset("tsteps_ablation_results_oxford", "(Oxford RobotCar)", "ablation_gradient_oxford")
+    plot_gradient_dataset(os.path.join(ROOT_DIR_HACK, "tsteps_ablation_results"), "(Nordland)", "ablation_gradient_nordland")
+    plot_gradient_dataset(os.path.join(ROOT_DIR_HACK, "tsteps_ablation_results_oxford"), "(Oxford RobotCar)", "ablation_gradient_oxford")
 
 if __name__ == "__main__":
     main()

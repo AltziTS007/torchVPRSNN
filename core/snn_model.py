@@ -244,15 +244,16 @@ def main():
     set_seed(params["SEED"])
     print(f"Random seed set to: {params['SEED']}")
 
+    ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     if args.dataset == "oxford":
         params["TRAIN_PATH"] = [
-            "ORC/ORC_sun/2015-08-12-15-04-18/stereo/left",
-            "ORC/ORC_rain/2015-10-29-12-18-17/stereo/left"
+            os.path.join(ROOT_DIR, "ORC/ORC_sun/2015-08-12-15-04-18/stereo/left"),
+            os.path.join(ROOT_DIR, "ORC/ORC_rain/2015-10-29-12-18-17/stereo/left")
         ]
-        params["TEST_PATH"] = "ORC/ORC_dusk/2014-11-21-16-07-03/stereo/left"
+        params["TEST_PATH"] = os.path.join(ROOT_DIR, "ORC/ORC_dusk/2014-11-21-16-07-03/stereo/left")
     else:
-        params["TRAIN_PATH"] = ["nordland_clean/data/spring", "nordland_clean/data/fall"]
-        params["TEST_PATH"] = "nordland_clean/data/summer"
+        params["TRAIN_PATH"] = [os.path.join(ROOT_DIR, "nordland_clean/data/spring"), os.path.join(ROOT_DIR, "nordland_clean/data/fall")]
+        params["TEST_PATH"] = os.path.join(ROOT_DIR, "nordland_clean/data/summer")
 
     if args.device == "auto":
         params["DEVICE"] = "cuda" if torch.cuda.is_available() else "cpu"
@@ -300,9 +301,9 @@ def main():
     if save_results:
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
         if args.experiment_name:
-            results_dir = f"results/{args.experiment_name}_{timestamp}"
+            results_dir = os.path.join(ROOT_DIR, f"results/{args.experiment_name}_{timestamp}")
         else:
-            results_dir = f"results/results_{timestamp}"
+            results_dir = os.path.join(ROOT_DIR, f"results/results_{timestamp}")
         weights_dir = os.path.join(results_dir, "weights_history")
         stdp_dir = os.path.join(results_dir, "stdp_viz")
 

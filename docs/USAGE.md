@@ -18,7 +18,7 @@ conda activate vpr_snn
 3) Run the end-to-end experiment
 
 ```bash
-python snn_model.py
+python core/snn_model.py
 ```
 
 This runs an unsupervised STDP training loop and evaluation. By default the script will:
@@ -62,7 +62,7 @@ This runs an unsupervised STDP training loop and evaluation. By default the scri
   - Example:
 
 ```bash
-python extract_tables_by_time.py \
+python tools/extract_tables_by_time.py \
   --start "2026-04-01 14:12:24" \
   --end "2026-04-02 02:49:35"
 ```
@@ -75,7 +75,7 @@ python extract_tables_by_time.py \
   - Example:
 
 ```bash
-python plot_r100p_from_extracted_tables.py \
+python tools/plot_r100p_from_extracted_tables.py \
   --in-file results/tables_2026-03-26_22-40-59_to_2026-03-27_00-36-08.txt \
   --out r100p_boxplot.png
 ```
@@ -83,11 +83,11 @@ python plot_r100p_from_extracted_tables.py \
   - Typical two-step workflow:
 
 ```bash
-python extract_tables_by_time.py \
+python tools/extract_tables_by_time.py \
   --start "2026-04-01 14:12:24" \
   --end "2026-04-02 02:49:35"
 
-python plot_r100p_from_extracted_tables.py \
+python tools/plot_r100p_from_extracted_tables.py \
   --in-file results/tables_2026-04-01_14-12-24_to_2026-04-02_02-49-35.txt \
   --out r100p_boxplot_from_extracted_tables.png
 ```
@@ -110,7 +110,7 @@ python plot_r100p_from_extracted_tables.py \
   - Example:
 
 ```bash
-python extract_and_plot_auc.py \
+python tools/extract_and_plot_auc.py \
   --start "2026-03-26 19:58:55" \
   --end "2026-03-27 21:44:03" \
   --tries 10 \
@@ -135,7 +135,7 @@ python extract_and_plot_auc.py \
   - Example:
 
 ```bash
-python unify_auc_r100p.py \
+python tools/unify_auc_r100p.py \
   --start "2026-04-01 14:12:24" \
   --end "2026-04-02 02:49:35" \
   --tries 10

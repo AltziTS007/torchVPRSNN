@@ -1,3 +1,8 @@
+import sys
+import os
+ROOT_DIR_HACK = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "core"))
+
 import os
 import re
 import matplotlib.pyplot as plt
@@ -34,8 +39,8 @@ def extract_auc_data(directory):
     return chunk_sizes, auc_means, auc_stds
 
 def main():
-    nordland_dir = "sliding_window_full_results"
-    oxford_dir = "sliding_window_full_results_oxford"
+    nordland_dir = os.path.join(ROOT_DIR_HACK, "sliding_window_full_results")
+    oxford_dir = os.path.join(ROOT_DIR_HACK, "sliding_window_full_results_oxford")
     
     n_cs, n_means, n_stds = extract_auc_data(nordland_dir)
     o_cs, o_means, o_stds = extract_auc_data(oxford_dir)

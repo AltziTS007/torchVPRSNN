@@ -1,3 +1,7 @@
+import sys
+import os
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "core"))
+
 #!/usr/bin/env python3
 """Recreate R@100P boxplot from extracted summary tables file."""
 

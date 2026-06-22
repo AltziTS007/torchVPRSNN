@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 set -u
 
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
 # Run snn_model.py 20 times for each requested MAX_SAMPLES value.
 # Usage examples:
 #   ./run_max_samples_benchmark.sh
 #   ./run_max_samples_benchmark.sh --device cuda --save-results false
 
-REPEATS=10
+REPEATS=15
 MAX_SAMPLES_LIST=(25 50 100 150 200 250 300 350 400)
-SCRIPT_PATH="snn_model.py"
+SCRIPT_PATH="$ROOT_DIR/core/snn_model.py"
 SCRIPT_ARGS="--dataset nordland"
 
 DEVICE="auto"
@@ -38,7 +40,8 @@ if [[ ! -f "$SCRIPT_PATH" ]]; then
 fi
 
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
-LOG_FILE="benchmark_log/benchmark_max_samples_${TIMESTAMP}.log"
+mkdir -p "$ROOT_DIR/benchmark_log"
+LOG_FILE="$ROOT_DIR/benchmark_log/benchmark_max_samples_${TIMESTAMP}.log"
 
 echo "Starting benchmark at $(date)" | tee -a "$LOG_FILE"
 echo "Device: $DEVICE" | tee -a "$LOG_FILE"

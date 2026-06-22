@@ -1,3 +1,8 @@
+import sys
+import os
+ROOT_DIR_HACK = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "core"))
+
 import os
 import re
 import matplotlib.pyplot as plt
@@ -41,7 +46,7 @@ def parse_log(filepath):
     return metrics
 
 def main():
-    directory = "tsteps_ablation_results_oxford"
+    directory = os.path.join(ROOT_DIR_HACK, "tsteps_ablation_results")
     results = {}
     
     for filename in os.listdir(directory):
@@ -73,14 +78,14 @@ def main():
     for i, txt in enumerate(t_steps_list):
         texts.append(plt.text(latencies[i], r100ps[i], f"t={txt}", ha='center', va='center'))
     adjust_text(texts, arrowprops=dict(arrowstyle="-", color='gray', lw=0.5))
-        
-    plt.title('Latency vs. R@100P Ablation (Oxford RobotCar)', fontsize=14)
+    
+    plt.title('Latency vs. R@100P Ablation', fontsize=14)
     plt.xlabel('Inference Latency per Query (ms)', fontsize=12)
     plt.ylabel('R@100P (%)', fontsize=12)
     plt.grid(True, linestyle='--', alpha=0.7)
-    plt.savefig('ablation_latency_vs_r100p_oxford.png', dpi=300, bbox_inches='tight')
+    plt.savefig('ablation_latency_vs_r100p.png', dpi=300, bbox_inches='tight')
     plt.close()
-    print("Saved plot to ablation_latency_vs_r100p_oxford.png")
+    print("Saved plot to ablation_latency_vs_r100p.png")
 
     # Plot 2: Energy vs R@100P (if available)
     if all(e is not None for e in energies):
@@ -91,14 +96,14 @@ def main():
         for i, txt in enumerate(t_steps_list):
             texts.append(plt.text(energies[i], r100ps[i], f"t={txt}", ha='center', va='center'))
         adjust_text(texts, arrowprops=dict(arrowstyle="-", color='gray', lw=0.5))
-            
-        plt.title('Energy vs. R@100P Ablation (Oxford RobotCar)', fontsize=14)
+        
+        plt.title('Energy vs. R@100P Ablation', fontsize=14)
         plt.xlabel('Effective Energy per Inference (Joules)', fontsize=12)
         plt.ylabel('R@100P (%)', fontsize=12)
         plt.grid(True, linestyle='--', alpha=0.7)
-        plt.savefig('ablation_energy_vs_r100p_oxford.png', dpi=300, bbox_inches='tight')
+        plt.savefig('ablation_energy_vs_r100p.png', dpi=300, bbox_inches='tight')
         plt.close()
-        print("Saved plot to ablation_energy_vs_r100p_oxford.png")
+        print("Saved plot to ablation_energy_vs_r100p.png")
 
 if __name__ == "__main__":
     main()

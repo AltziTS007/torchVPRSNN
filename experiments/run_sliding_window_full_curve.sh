@@ -1,16 +1,18 @@
 #!/usr/bin/env bash
 set -u
 
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
 # Array of chunk sizes (N places) to test
 CHUNK_SIZES=(25 50 100 150 200 250 300 350 400)
 TOTAL_PLACES=400
 
 echo "============================================================"
-echo "    Sliding Window Protocol - OXFORD FULL CURVE    "
+echo "    Sliding Window Protocol - FULL CURVE           "
 echo "============================================================"
 
-mkdir -p sliding_window_full_results_oxford
-rm -f sliding_window_full_results_oxford/summary_*.txt
+mkdir -p "$ROOT_DIR"/sliding_window_full_results
+rm -f "$ROOT_DIR"/sliding_window_full_results/summary_*.txt
 
 for CS in "${CHUNK_SIZES[@]}"; do
     echo "Running Sliding Window Protocol for Chunk Size: $CS"
@@ -33,22 +35,22 @@ for CS in "${CHUNK_SIZES[@]}"; do
     
     echo "Number of runs for CS=$CS: $NUM_CHUNKS (Stride: $STRIDE)"
     
-    OUT_DIR="sliding_window_full_results_oxford/cs_${CS}"
+    OUT_DIR=""$ROOT_DIR"/sliding_window_full_results/cs_${CS}"
     mkdir -p "$OUT_DIR"
     
     for (( i=0; i<NUM_CHUNKS; i++ )); do
         START_IDX=$(( i * STRIDE ))
         LOG_FILE="${OUT_DIR}/chunk_${i}.log"
         echo "  -> Running chunk $i (Start: $START_IDX, Size: $CS) in background..."
-        python snn_model.py --dataset oxford --start-idx $START_IDX --max-samples $CS --t-steps 150 --save-results false > "$LOG_FILE" 2>&1 &
+        python "$ROOT_DIR"/core/snn_model.py --start-idx $START_IDX --max-samples $CS --t-steps 300 --save-results false > "$LOG_FILE" 2>&1 &
     done
     wait
     
     # Parse the results for this chunk size
-    python plot_sliding_window_protocol.py --dir "$OUT_DIR" > "sliding_window_full_results_oxford/summary_${CS}.txt"
-    cat "sliding_window_full_results_oxford/summary_${CS}.txt"
+    python "$ROOT_DIR"/tools/plot_sliding_window_protocol.py --dir "$OUT_DIR" > ""$ROOT_DIR"/sliding_window_full_results/summary_${CS}.txt"
+    cat ""$ROOT_DIR"/sliding_window_full_results/summary_${CS}.txt"
     echo "------------------------------------------------------------"
 done
 
 echo "Done running all chunk sizes. Plotting final curve..."
-python plot_sliding_window_curve_oxford.py
+python "$ROOT_DIR"/tools/plot_sliding_window_curve.py
