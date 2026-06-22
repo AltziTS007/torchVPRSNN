@@ -1,6 +1,4 @@
-# VPR-SNN: Unsupervised Spiking Neural Network for Visual Place Recognition
-
-This repository contains a PyTorch-based implementation of an unsupervised Spiking Neural Network (SNN) tailored for Visual Place Recognition (VPR). The architecture is inspired by the Diehl & Cook model, utilizing Spike-Timing-Dependent Plasticity (STDP) for learning and a Winner-Take-All (WTA) mechanism for neuron specialization.
+# Visual Place Recognition Using Rate-Encoded Spiking Neural Networks with Discrete STDP Learning
 
 ## Architecture
 
@@ -89,7 +87,7 @@ python plot_combined_auc.py
 ```
 *Output: Generates `ablation_sliding_window_combined_auc.png`.*
 
-### 4. Figure: Timestep (Latency/Energy) Ablation
+### 4.Timestep (Latency/Energy) Ablation
 To generate the Pareto frontier curves evaluating the optimal deployment sweet spot (latency vs. performance):
 ```bash
 bash experiments/run_ablation_tsteps.sh
