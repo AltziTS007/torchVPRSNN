@@ -1,5 +1,4 @@
 # Visual Place Recognition Using Rate-Encoded Spiking Neural Networks with Discrete STDP Learning
-This repository contains a PyTorch-based implementation of an unsupervised Spiking Neural Network (SNN) tailored for Visual Place Recognition (VPR). The architecture is inspired by the Diehl & Cook model, utilizing Spike-Timing-Dependent Plasticity (STDP) for learning and a Winner-Take-All (WTA) mechanism for neuron specialization.
 
 ## Architecture
 
