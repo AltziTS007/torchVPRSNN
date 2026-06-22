@@ -33,6 +33,19 @@ import sys
 import numpy as np
 import datetime
 import json
+import argparse
+import random
+
+def set_seed(seed: int = 42):
+    """Fix random seeds for reproducibility."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
 
 from encoders import RateEncoder
 from networks import torchVPRSNN
@@ -45,10 +58,10 @@ from vprsnn_evaluation import (
     plot_weights,
     calculate_p_at_100r,
     calculate_r_at_100p,
+    calculate_auc_pr,
     plot_distance_matrix,
     plot_pr_curve,
     plot_recall_at_n,
-    plot_neuron_assignments,
     plot_neuron_assignments,
     visualize_qualitative_results
 )
@@ -56,13 +69,122 @@ from vprsnn_evaluation import (
 from neuronal_assignments import (
     get_training_spike_counts,
     weighted_assignment_inference,
-    probability_based_assignment
+    probability_based_assignment,
+    sliding_window_aggregation
 )
 
 
 # ============================================================
 # MAIN EXPERIMENT PIPELINE
 # ============================================================
+
+def _str_to_bool(value):
+    """Parse common string forms into booleans for CLI flags."""
+    if isinstance(value, bool):
+        return value
+    v = str(value).strip().lower()
+    if v in {"1", "true", "t", "yes", "y", "on"}:
+        return True
+    if v in {"0", "false", "f", "no", "n", "off"}:
+        return False
+    raise argparse.ArgumentTypeError(f"Invalid boolean value: {value}")
+
+
+def _parse_args():
+    """CLI switches for runtime behavior."""
+    parser = argparse.ArgumentParser(description="Train/evaluate VPR SNN")
+    parser.add_argument(
+        "--device",
+        choices=["cpu", "cuda", "auto"],
+        default="auto",
+        help="Compute device: cpu, cuda, or auto (default).",
+    )
+    parser.add_argument(
+        "--save-results",
+        type=_str_to_bool,
+        default=None,
+        help="Enable/disable writing logs, json and images (true/false).",
+    )
+    parser.add_argument(
+        "--max-samples",
+        type=int,
+        default=None,
+        help="Override MAX_SAMPLES for dataset truncation.",
+    )
+    parser.add_argument(
+        "--start-idx",
+        type=int,
+        default=0,
+        help="Start index for sliding window dataset evaluation.",
+    )
+    parser.add_argument(
+        "--dataset",
+        choices=["nordland", "oxford"],
+        default="nordland",
+        help="Dataset to use: 'nordland' (default) or 'oxford'.",
+    )
+    parser.add_argument(
+        "--wta-mode",
+        choices=["hard", "soft", "none"],
+        default="hard",
+        help="WTA mode: hard (default), soft, or none.",
+    )
+    parser.add_argument(
+        "--disable-homeostasis",
+        action="store_true",
+        help="Disable homeostatic threshold adaptation.",
+    )
+    parser.add_argument(
+        "--disable-patch-norm",
+        action="store_true",
+        help="Disable weight patch normalization.",
+    )
+    parser.add_argument(
+        "--standard-assignment-only",
+        action="store_true",
+        help="Only evaluate using standard assignments.",
+    )
+    parser.add_argument(
+        "--simulate-spillover",
+        action="store_true",
+        help="Enable continuous ODE state carry-over (Ablation Study).",
+    )
+    parser.add_argument(
+        "--sample-10m",
+        action="store_true",
+        help="Enable 10-meter spatial sampling for the Oxford dataset.",
+    )
+    parser.add_argument(
+        "--t-steps",
+        type=int,
+        default=None,
+        help="Override t_steps for the simulation duration.",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Random seed for reproducibility (default: 42).",
+    )
+    parser.add_argument(
+        "--save-model",
+        type=str,
+        default=None,
+        help="Path to save the trained model checkpoint (e.g. baseline.pt).",
+    )
+    parser.add_argument(
+        "--load-model",
+        type=str,
+        default=None,
+        help="Path to load a trained model checkpoint (skips STDP training).",
+    )
+    parser.add_argument(
+        "--experiment-name",
+        type=str,
+        default=None,
+        help="Custom prefix for the results directory name.",
+    )
+    return parser.parse_args()
 
 def main():
     """
@@ -74,25 +196,28 @@ def main():
         5. Metric visualization
     """
 
+    args = _parse_args()
+
     # --------------------------------------------------------
     # Hyperparameters & Configuration
     # --------------------------------------------------------
     params = {
         # Data paths
-        "TRAIN_PATH": ["nordland_clean/data/spring", "nordland_clean/data/fall"],
-        "TEST_PATH": "nordland_clean/data/summer",
+        "TRAIN_PATH": [],
+        "TEST_PATH": "",
         
         # Training loop
         "EPOCHS": 120,
         "BATCH_SIZE": 64,
         "DEVICE": "cuda" if torch.cuda.is_available() else "cpu",
+        "SAVE_RESULTS": True,
         
         # Architecture
         "N_IN": 784,
-        "N_EXC": 200,
+        "N_EXC": 400,
         
         # Rate Encoder
-        "t_steps": 100,
+        "t_steps": 150,
         "rate_scale": 0.25,
         
         # Neuron / STDP Params (Diehl & Cook)
@@ -108,36 +233,98 @@ def main():
         "w_ei": 1.0,
         "w_ie": 10.0,
         "thr_eta": 0.001,
-        "target_rate": 0.01
+        "target_rate": 0.01,
+        "MAX_SAMPLES": 100,
+        "SEED": args.seed,
+        "SAVE_MODEL": args.save_model,
+        "LOAD_MODEL": args.load_model
     }
 
+    # Set random seeds immediately for reproducibility
+    set_seed(params["SEED"])
+    print(f"Random seed set to: {params['SEED']}")
+
+    if args.dataset == "oxford":
+        params["TRAIN_PATH"] = [
+            "ORC/ORC_sun/2015-08-12-15-04-18/stereo/left",
+            "ORC/ORC_rain/2015-10-29-12-18-17/stereo/left"
+        ]
+        params["TEST_PATH"] = "ORC/ORC_dusk/2014-11-21-16-07-03/stereo/left"
+    else:
+        params["TRAIN_PATH"] = ["nordland_clean/data/spring", "nordland_clean/data/fall"]
+        params["TEST_PATH"] = "nordland_clean/data/summer"
+
+    if args.device == "auto":
+        params["DEVICE"] = "cuda" if torch.cuda.is_available() else "cpu"
+    elif args.device == "cuda" and not torch.cuda.is_available():
+        print("CUDA requested but not available. Falling back to CPU.")
+        params["DEVICE"] = "cpu"
+    else:
+        params["DEVICE"] = args.device
+
+    if args.save_results is not None:
+        params["SAVE_RESULTS"] = args.save_results
+
+    if args.max_samples is not None:
+        if args.max_samples <= 0:
+            raise ValueError("--max-samples must be a positive integer")
+        params["MAX_SAMPLES"] = args.max_samples
+
+    if args.t_steps is not None:
+        if args.t_steps <= 0:
+            raise ValueError("--t-steps must be a positive integer")
+        params["t_steps"] = args.t_steps
+
+    params["WTA_MODE"] = args.wta_mode
+    params["ENABLE_HOMEOSTASIS"] = not args.disable_homeostasis
+    params["ENABLE_WEIGHT_NORM"] = not args.disable_patch_norm
+    params["STANDARD_ASSIGNMENT_ONLY"] = args.standard_assignment_only
+    params["SIMULATE_SPILLOVER"] = args.simulate_spillover
+    params["SAMPLE_10M"] = args.sample_10m
+
+    if params["SIMULATE_SPILLOVER"]:
+        print("Spill-over simulation active: Enforcing BATCH_SIZE=1 to preserve temporal sequence.")
+        params["BATCH_SIZE"] = 1
+
     DEVICE = params["DEVICE"]
+    save_results = params.get("SAVE_RESULTS", True)
     print(f"Running on device: {DEVICE}")
     
     # --------------------------------------------------------
     # Results Directory Setup
     # --------------------------------------------------------
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    results_dir = f"results/results_{timestamp}"
-    weights_dir = os.path.join(results_dir, "weights_history")
-    stdp_dir = os.path.join(results_dir, "stdp_viz")
-    
-    os.makedirs(results_dir, exist_ok=True)
-    os.makedirs(weights_dir, exist_ok=True)
-    os.makedirs(stdp_dir, exist_ok=True)
-    
-    print(f"Saving all results to: {results_dir}")
+    results_dir = None
+    weights_dir = None
+    stdp_dir = None
+
+    if save_results:
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+        if args.experiment_name:
+            results_dir = f"results/{args.experiment_name}_{timestamp}"
+        else:
+            results_dir = f"results/results_{timestamp}"
+        weights_dir = os.path.join(results_dir, "weights_history")
+        stdp_dir = os.path.join(results_dir, "stdp_viz")
+
+        os.makedirs(results_dir, exist_ok=True)
+        os.makedirs(weights_dir, exist_ok=True)
+        os.makedirs(stdp_dir, exist_ok=True)
+
+        print(f"Saving all results to: {results_dir}")
+    else:
+        print("SAVE_RESULTS=False: terminal-only mode (no output files, logs, or images).")
 
     # --------------------------------------------------------
     # Logger Setup (Redirect stdout)
     # --------------------------------------------------------
-    sys.stdout = Logger(os.path.join(results_dir, "output.log"))
-    print(f"Logging execution output to: {os.path.join(results_dir, 'output.log')}")
+    if save_results:
+        sys.stdout = Logger(os.path.join(results_dir, "output.log"))
+        print(f"Logging execution output to: {os.path.join(results_dir, 'output.log')}")
 
-    # Save hyperparameters
-    with open(os.path.join(results_dir, "hyperparameters.json"), "w") as f:
-        json.dump(params, f, indent=4)
-    print("Saved hyperparameters.json")
+        # Save hyperparameters
+        with open(os.path.join(results_dir, "hyperparameters.json"), "w") as f:
+            json.dump(params, f, indent=4)
+        print("Saved hyperparameters.json")
 
     # --------------------------------------------------------
     # Data loading
@@ -147,8 +334,10 @@ def main():
             train_path=params["TRAIN_PATH"],
             test_path=params["TEST_PATH"],
             batch_size=params["BATCH_SIZE"],
-            max_samples=100,
-            shuffle_train=True
+            max_samples=params["MAX_SAMPLES"],
+            start_idx=args.start_idx,
+            shuffle_train=True,
+            oxford_10m_sampling=params.get("SAMPLE_10M", False)
         )
     except Exception as e:
         print("Dataset loading failed:", e)
@@ -180,38 +369,65 @@ def main():
         w_ie=params["w_ie"],
         thr_eta=params["thr_eta"],
         target_rate=params["target_rate"],
-        device=DEVICE
+        max_samples=params["MAX_SAMPLES"],
+        device=DEVICE,
+        wta_mode=params["WTA_MODE"],
+        enable_homeostasis=params["ENABLE_HOMEOSTASIS"],
+        enable_weight_norm=params["ENABLE_WEIGHT_NORM"]
     ).to(DEVICE)
 
     # --------------------------------------------------------
     # Unsupervised STDP training
     # --------------------------------------------------------
-    print("Starting STDP training...")
-    net.train()
+    
+    if params["LOAD_MODEL"] and os.path.exists(params["LOAD_MODEL"]):
+        print(f"Loading trained model from: {params['LOAD_MODEL']}")
+        net.load_state_dict(torch.load(params["LOAD_MODEL"], map_location=DEVICE))
+        print("Skipping STDP training.")
+    else:
+        print("Starting STDP training...")
+        net.train()
 
-    total_batches = len(train_loader)
+        total_batches = len(train_loader)
+        carried_state = None
 
-    for epoch in range(1, params["EPOCHS"] + 1):
-        if epoch % 20 == 0:
-            print(f"Epoch {epoch}/{params['EPOCHS']}")
+        for epoch in range(1, params["EPOCHS"] + 1):
+            if epoch % 20 == 0:
+                print(f"Epoch {epoch}/{params['EPOCHS']}")
+                
+            for batch_idx, (xb, _) in enumerate(train_loader):
+                xb = xb.to(DEVICE)
+                spk_in = encoder(xb)
+                
+                # Monitor only on last batch
+                is_last_batch = (batch_idx == total_batches - 1)
+                
+                if params.get("SIMULATE_SPILLOVER", False):
+                    if is_last_batch and save_results:
+                        _, history, carried_state = net(spk_in, do_stdp=True, monitor=True, return_state=True, state=carried_state)
+                        plot_stdp_monitor(history, epoch, stdp_dir)
+                    else:
+                        _, carried_state = net(spk_in, do_stdp=True, return_state=True, state=carried_state)
+                        
+                    # Simulate 150ms Rest Phase (128 steps)
+                    REST_STEPS = 128
+                    rest_spk_in = torch.zeros((REST_STEPS, xb.size(0), spk_in.size(2)), device=DEVICE)
+                    _, carried_state = net(rest_spk_in, do_stdp=True, return_state=True, state=carried_state)
+                else:
+                    if is_last_batch and save_results:
+                        _, history = net(spk_in, do_stdp=True, monitor=True)
+                        plot_stdp_monitor(history, epoch, stdp_dir)
+                    else:
+                        _ = net(spk_in, do_stdp=True)
             
-        for batch_idx, (xb, _) in enumerate(train_loader):
-            xb = xb.to(DEVICE)
-            spk_in = encoder(xb)
-            
-            # Monitor only on last batch
-            is_last_batch = (batch_idx == total_batches - 1)
-            
-            if is_last_batch:
-                _, history = net(spk_in, do_stdp=True, monitor=True)
-                plot_stdp_monitor(history, epoch, stdp_dir)
-            else:
-                _ = net(spk_in, do_stdp=True)
-        
-        # Save weights every 10 epochs
-        if epoch % 10 == 0:
-            epoch_weight_path = os.path.join(weights_dir, f"epoch_{epoch}_weights.png")
-            plot_weights(net.w_in_exc, params["N_EXC"], save_path=epoch_weight_path)
+            # Save weights every 10 epochs
+            if save_results and epoch % 10 == 0:
+                epoch_weight_path = os.path.join(weights_dir, f"epoch_{epoch}_weights.png")
+                plot_weights(net.w_in_exc, params["N_EXC"], save_path=epoch_weight_path)
+                
+        if params["SAVE_MODEL"]:
+            torch.save(net.state_dict(), params["SAVE_MODEL"])
+            print(f"Saved trained model checkpoint to: {params['SAVE_MODEL']}")
 
     # --------------------------------------------------------
     # Neuron-place assignment
@@ -228,125 +444,232 @@ def main():
     # --------------------------------------------------------
     # Evaluation
     # --------------------------------------------------------
-    acc, preds, targets, sim_matrix, prob_matrix, S_Q_cpu = evaluate_vpr(
+    acc, preds, targets, sim_matrix, prob_matrix, S_Q_cpu, profiler_stats = evaluate_vpr(
         net=net,
         encoder=encoder,
         loader=test_loader,
         assignments=assignments,
         n_classes=num_classes,
-        device=DEVICE
+        device=DEVICE,
+        simulate_spillover=params.get("SIMULATE_SPILLOVER", False)
     )
     S_Q = S_Q_cpu.to(DEVICE)
+
+    # Save runtime/compute profiling data (FLOPs, latency, power/energy)
+    if save_results:
+        with open(os.path.join(results_dir, "inference_profile.json"), "w") as f:
+            json.dump(profiler_stats, f, indent=4)
+        print(f"Saved inference profile to: {os.path.join(results_dir, 'inference_profile.json')}")
 
     # --------------------------------------------------------
     # Weighted & Probability-based Assignments
     # --------------------------------------------------------
-    print("\n--- Computing Weighted Neuronal Assignments ---")
+    methods = [
+        ("Standard", sim_matrix, preds, acc)
+    ]
     
-    # 1. Get Training Spike Counts S^R
-    S_R = get_training_spike_counts(net, encoder, train_loader, params["N_EXC"], num_classes, device=DEVICE)
-    
-    # 2. Get Query Spike Counts S^Q
-    # S_Q provided by evaluate_vpr to ensure alignment with targets
-    print(f"Using Query Spike Counts (S^Q) from evaluation step. Shape: {S_Q.shape}")
-            
-    # 3. Weighted Assignment
-    scores_weighted = weighted_assignment_inference(S_Q, S_R, gamma=0.02)
-    
-    # 4. Probability-based (on Weighted)
-    scores_prob = probability_based_assignment(scores_weighted)
-    
-    # Accuracies for table
-    def calc_acc(scores, targets):
-        preds = scores.argmax(dim=1).cpu().numpy()
-        correct = (preds == targets).sum()
-        return 100 * correct / len(targets)
+    if not params["STANDARD_ASSIGNMENT_ONLY"]:
+        print("\n--- Computing Weighted Neuronal Assignments ---")
         
-    acc_w = calc_acc(scores_weighted, targets)
-    acc_p = calc_acc(scores_prob, targets)
+        # 1. Get Training Spike Counts S^R
+        S_R = get_training_spike_counts(net, encoder, train_loader, params["N_EXC"], num_classes, device=DEVICE)
+        
+        # 2. Get Query Spike Counts S^Q
+        # S_Q provided by evaluate_vpr to ensure alignment with targets
+        print(f"Using Query Spike Counts (S^Q) from evaluation step. Shape: {S_Q.shape}")
+                
+        # 3. Weighted Assignment
+        scores_weighted = weighted_assignment_inference(S_Q, S_R, gamma=0.02)
+        
+        # 4. Probability-based (on Weighted)
+        scores_prob = probability_based_assignment(scores_weighted)
+        
+        # Accuracies for table
+        def calc_acc(scores, targets):
+            preds = scores.argmax(dim=1).cpu().numpy()
+            correct = (preds == targets).sum()
+            return 100 * correct / len(targets)
+            
+        acc_w = calc_acc(scores_weighted, targets)
+        acc_p = calc_acc(scores_prob, targets)
+    
+        methods.extend([
+            ("Weighted", scores_weighted.cpu().numpy(), scores_weighted.argmax(dim=1).cpu().numpy(), acc_w), # Weighted
+            ("Weighted+Prob", scores_prob.cpu().numpy(), scores_prob.argmax(dim=1).cpu().numpy(), acc_p)     # Weighted+Prob
+        ])
+        
+        # --------------------------------------------------------
+        # 5. Sequential Frame Aggregation (Sliding Window Sweep)
+        # --------------------------------------------------------
+        print("\n--- Running Sequential Frame Aggregation Sweep ---")
+        k_values = [1, 3, 5, 7, 10, 15]
+        rules = ['product', 'mean']
+        
+        # We will collect R@100P for plotting
+        sweep_results = {'product': [], 'mean': []}
+        
+        best_k = 5 # default choice for final table
+        best_rule = 'product'
+        
+        for rule in rules:
+            print(f"  Aggregation Rule: {rule}")
+            for k in k_values:
+                agg_scores_t, valid_targets_list, latency_ms = sliding_window_aggregation(
+                    scores_prob, targets, k, rule=rule
+                )
+                
+                if len(valid_targets_list) == 0:
+                    print(f"    k={k}: Not enough valid frames")
+                    sweep_results[rule].append(0.0)
+                    continue
+                    
+                agg_scores_np = agg_scores_t.cpu().numpy()
+                valid_targets_np = np.array(valid_targets_list)
+                
+                r100p = calculate_r_at_100p(agg_scores_np, valid_targets_np)
+                p100r = calculate_p_at_100r(agg_scores_np, valid_targets_np)
+                acc = calc_acc(agg_scores_t, valid_targets_np)
+                
+                print(f"    k={k:2d} (N={len(valid_targets_list)}): R@100P = {r100p:5.2f}% | P@100R = {p100r:5.2f}% | Acc = {acc:5.2f}%")
+                
+                if k == 5 and rule == "product":
+                    print(f"    -> Aggregation latency overhead for k=5 (product): {latency_ms:.4f} ms per query")
+                    
+                sweep_results[rule].append(r100p)
+                
+                # Add to methods for full evaluation if it's the baseline (k=1) or the best chosen configuration
+                method_name = f"SeqAgg(k={k},{rule})"
+                if k == best_k and rule == best_rule:
+                    methods.append((method_name, agg_scores_np, agg_scores_t.argmax(dim=1).cpu().numpy(), acc, valid_targets_np))
 
+        # Save sweep plot
+        if save_results:
+            import matplotlib.pyplot as plt
+            plt.figure(figsize=(8, 5))
+            plt.plot(k_values, sweep_results['product'], marker='o', label='Product Rule')
+            plt.plot(k_values, sweep_results['mean'], marker='s', label='Mean Rule')
+            plt.xlabel('Window Size (k)')
+            plt.ylabel('R@100P (%)')
+            plt.title('Sequential Aggregation Performance')
+            plt.legend()
+            plt.grid(True)
+            plot_path = os.path.join(results_dir, "aggregation_sweep_r100p.png")
+            plt.savefig(plot_path)
+            plt.close()
+            print(f"\nSaved aggregation sweep plot to {plot_path}")
+            
+        # --------------------------------------------------------
+        # 5.b Velocity Sensitivity Sweep (Ablation)
+        # --------------------------------------------------------
+        print("\n--- Running Velocity Sensitivity Sweep (Product Rule) ---")
+        velocity_factors = [0.5, 0.8, 0.9, 0.95, 1.0, 1.05, 1.1, 1.2, 1.5, 2.0]
+        for v_k in [5, 15]:
+            print(f"  k = {v_k}:")
+            for v in velocity_factors:
+                agg_scores_t, valid_targets_list, _ = sliding_window_aggregation(
+                    scores_prob, targets, k=v_k, rule="product", velocity_factor=v
+                )
+                if len(valid_targets_list) > 0:
+                    agg_scores_np = agg_scores_t.cpu().numpy()
+                    valid_targets_np = np.array(valid_targets_list)
+                    r100p = calculate_r_at_100p(agg_scores_np, valid_targets_np)
+                    print(f"    v={v:4.2f}x: R@100P = {r100p:5.2f}%")
+                else:
+                    print(f"    v={v:4.2f}x: Not enough valid frames")
+            
     # 6. Unified Result Processing & Plotting
     # --------------------------------------------------------
     # Handle ConcatDataset for training (use first dataset as reference for viz)
     vis_train_ds = train_loader.dataset
     if isinstance(vis_train_ds, torch.utils.data.ConcatDataset):
         vis_train_ds = vis_train_ds.datasets[0]
-
-    methods = [
-        ("Standard", sim_matrix, preds, acc),                                                            # Standard
-        ("Weighted", scores_weighted.cpu().numpy(), scores_weighted.argmax(dim=1).cpu().numpy(), acc_w), # Weighted
-        ("Weighted+Prob", scores_prob.cpu().numpy(), scores_prob.argmax(dim=1).cpu().numpy(), acc_p)     # Weighted+Prob
-    ]
     
     # Store metrics for final table
     final_metrics = []
+    
+    # Store raw predictions for GPS/trajectory visualization
+    predictions_export = {
+        "image_files": list(test_loader.dataset.image_files),
+        "methods": {}
+    }
 
-    for name, scores, pred_labels, accuracy in methods:
-        print(f"\nProcessing Results for: {name}...")
+    for method_tuple in methods:
+        if len(method_tuple) == 4:
+            name, scores, pred_labels, accuracy = method_tuple
+            curr_targets = targets
+        else:
+            name, scores, pred_labels, accuracy, curr_targets = method_tuple
+
+        predictions_export["methods"][name] = {
+            "pred_labels": pred_labels.tolist() if hasattr(pred_labels, "tolist") else list(pred_labels),
+            "true_labels": curr_targets.tolist() if hasattr(curr_targets, "tolist") else list(curr_targets)
+        }
+
+        print(f"\nProcessing Results for: {name} (N={len(curr_targets)})...")
         
         # Create Method Directory
-        method_dir = os.path.join(results_dir, name.replace(" ", "_"))
-        os.makedirs(method_dir, exist_ok=True)
+        method_dir = None
+        if save_results:
+            method_dir = os.path.join(results_dir, name.replace(" ", "_").replace("(","").replace(")","").replace(",","_"))
+            os.makedirs(method_dir, exist_ok=True)
         
         # Calculate Metrics
-        p100r = calculate_p_at_100r(scores, targets)
-        r100p = calculate_r_at_100p(scores, targets)
+        p100r = calculate_p_at_100r(scores, curr_targets)
+        r100p = calculate_r_at_100p(scores, curr_targets)
+        auc_pr = calculate_auc_pr(scores, curr_targets)
         
         final_metrics.append({
             "Method": name,
             "Accuracy": accuracy,
             "P@100R": p100r,
-            "R@100P": r100p
+            "R@100P": r100p,
+            "AUC-PR": auc_pr,
+            "N": len(curr_targets)
         })
         
-        # Visualizations
-        # 1. Distance Matrix
-        plot_distance_matrix(scores, save_path=os.path.join(method_dir, "distance_matrix.png"), targets=targets)
-        
-        # 2. PR Curve
-        plot_pr_curve(scores, targets, num_classes, save_path=os.path.join(method_dir, "pr_curve.png"))
-        
-        # 3. Recall @ N
-        plot_recall_at_n(scores, targets, save_path=os.path.join(method_dir, "recall_at_n.png"))
-        
-        # 4. Qualitative Results (Reuse Standard Assignments for neuron interpretation, but use Method Preds)
-        # Note: Assignments are static (Standard Training), but Preds change per method.
-        visualize_qualitative_results(
-            query_ds=test_loader.dataset,
-            database_ds=vis_train_ds,
-            assignments=assignments,
-            weights=net.w_in_exc,
-            preds=pred_labels,
-            targets=targets,
-            save_path=os.path.join(method_dir, "qualitative.png")
-        )
+        if save_results:
+            # Visualizations
+            # 1. Distance Matrix
+            plot_distance_matrix(scores, save_path=os.path.join(method_dir, "distance_matrix.png"), targets=curr_targets)
+
+            # 2. PR Curve
+            plot_pr_curve(scores, curr_targets, num_classes, save_path=os.path.join(method_dir, "pr_curve.png"))
+
+            # 3. Recall @ N
+            plot_recall_at_n(scores, curr_targets, save_path=os.path.join(method_dir, "recall_at_n.png"))
+
+            # 4. Qualitative Results (Reuse Standard Assignments for neuron interpretation, but use Method Preds)
+            # Note: Assignments are static (Standard Training), but Preds change per method.
+            visualize_qualitative_results(
+                query_ds=test_loader.dataset,
+                database_ds=vis_train_ds,
+                assignments=assignments,
+                weights=net.w_in_exc,
+                preds=pred_labels,
+                targets=curr_targets,
+                save_path=os.path.join(method_dir, "qualitative.png")
+            )
     
     # --------------------------------------------------------
     # 7. Final Summary Table
     # --------------------------------------------------------
-    print("\n" + "="*80)
+    print("\n" + "="*95)
     
-    # Check if Accuracy == P@100R for ALL methods
-    redundant_acc = all(abs(m["Accuracy"] - m["P@100R"]) < 0.1 for m in final_metrics)
-    
-    if redundant_acc:
-        header = f"{'METHOD':<30} | {'P@100R':<12} | {'R@100P':<10}"
-        print(f" (Note: Accuracy removed as it is identical to P@100R)")
-    else:
-        header = f"{'METHOD':<30} | {'ACCURACY':<10} | {'P@100R':<12} | {'R@100P':<10}"
-        
+    header = f"{'METHOD':<30} | {'ACCURACY':<10} | {'P@100R':<12} | {'R@100P':<10} | {'AUC-PR':<10} | {'N':<5}"
     print(header)
-    print("-" * 80)
+    print("-" * 105)
     
     for m in final_metrics:
-        if redundant_acc:
-             print(f"{m['Method']:<30} | {m['P@100R']:<11.2f}% | {m['R@100P']:<9.2f}%")
-        else:
-             print(f"{m['Method']:<30} | {m['Accuracy']:<9.2f}% | {m['P@100R']:<11.2f}% | {m['R@100P']:<9.2f}%")
+        print(f"{m['Method']:<30} | {m['Accuracy']:<9.2f}% | {m['P@100R']:<11.2f}% | {m['R@100P']:<9.2f}% | {m['AUC-PR']:<9.2f}% | {m['N']:<5}")
              
-    print("="*80 + "\n")
+    print("="*105 + "\n")
+
+    if save_results:
+        preds_path = os.path.join(results_dir, "predictions.json")
+        with open(preds_path, 'w') as f:
+            json.dump(predictions_export, f)
+        print(f"Saved raw predictions for mapping to {preds_path}")
 
 
 if __name__ == "__main__":
     main()
-

@@ -52,19 +52,21 @@ class RateEncoder(nn.Module):
         Returns:
             spk (Tensor): [T, B, N]
         """
-        B = x.size(0)
 
-        # Flatten spatial dimensions → feature vector
+        B = x.size(0) # Grabs the 'Batch Size' (how many images we are processing at the exact same time)
+
+        # Flattens the 2D image (like 28x28) into one long 1D list of 784 pixels per image, then scales the brightness
         rates = x.view(B, -1) * self.rate_scale
 
-        # Enforce valid firing probabilities
+        # Forces every number in our 'rates' tensor to stay strictly between 0.0 and 1.0
         rates = rates.clamp(0.0, 1.0)
 
-        # Generate Poisson spike trains
+        # Uses the snntorch library to actually generate the full 3D "movie" of spikes!
         spk = spikegen.rate(rates, num_steps=self.t_steps)
 
-        # Optional telemetry (rarely printed)
+        # Picks a random number between 0 and 1; if it's less than 0.01, it runs the next line (happens ~1% of the time)
         if torch.rand(1).item() < 0.01:
+            # Prints out the average spike rate (how often neurons are firing overall) for debugging purposes
             print(f"DEBUG: Input Spike Rate: {spk.float().mean().item():.4f}")
 
-        return spk
+        return spk # Sends our finished 3D tensor of binary spikes out to the rest of the neural network

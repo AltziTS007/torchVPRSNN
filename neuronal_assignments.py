@@ -2,11 +2,14 @@
 neuronal_assignments.py
 
 Implements Section B (Weighted Assignments) and Section C (Probability-based Assignments)
-from Hussaini et al. "Spiking Neural Networks for Visual Place Recognition via Weighted Neuronal Assignments".
+from Sliding Window et al. "Spiking Neural Networks for Visual Place Recognition via Weighted Neuronal Assignments".
 """
 
 import torch
 from tqdm import tqdm
+import time
+import numpy as np
+import math
 
 def get_training_spike_counts(net, encoder, loader, n_exc, n_classes, device="cpu"):
     """
@@ -186,3 +189,138 @@ def probability_based_assignment(scores):
     prob_scores = scores_norm / row_sums
     
     return prob_scores
+
+def sliding_window_aggregation(prob_scores, targets, k, rule="product", velocity_factor=1.0):
+    """
+    Implements a sliding window aggregation over sequential queries.
+    
+    Args:
+        prob_scores (Tensor): [n_query, n_classes] - Probability scores per frame
+        targets (Tensor or list): [n_query] - Ground truth targets
+        k (int): Window size
+        rule (str): 'product' or 'mean'
+        velocity_factor (float): Simulates traverse velocity mismatch. 1.0 means exactly 1 frame per place.
+        
+    Returns:
+        agg_scores (Tensor): [n_valid_queries, n_classes]
+        valid_targets (list): [n_valid_queries]
+        latency_ms (float): Average per-query latency overhead in milliseconds
+    """
+    n_query, n_classes = prob_scores.shape
+    device = prob_scores.device
+    
+    if not isinstance(targets, torch.Tensor):
+        targets_t = torch.tensor(targets, device=device)
+    else:
+        targets_t = targets.to(device)
+        
+    # 1. Find discontinuities (resets)
+    resets = []
+    for i in range(1, n_query):
+        if targets_t[i] != targets_t[i-1] + 1:
+            resets.append(i)
+            
+    # 2. Determine valid windows (discard k-1 frames at the start and after any reset)
+    valid_indices = []
+    for i in range(n_query):
+        # Find the start of the current sequence (latest reset <= i)
+        seq_start = 0
+        for r in resets:
+            if r <= i:
+                seq_start = r
+        
+        # We need at least k frames in the current sequence
+        if i - seq_start >= k - 1:
+            valid_indices.append(i)
+            
+    n_valid = len(valid_indices)
+    
+    if n_valid == 0:
+        return torch.empty((0, n_classes), device=device), [], 0.0
+        
+    # We will measure latency for the aggregation operations only
+    agg_scores = torch.zeros((n_valid, n_classes), device=device)
+    valid_targets = []
+    
+    # Force sync for precise timing
+    if device.type == 'cuda':
+        torch.cuda.synchronize()
+    start_time = time.perf_counter()
+    
+    eps = 1e-8
+    if rule == "product":
+        log_probs = torch.log(prob_scores + eps)
+    
+    for valid_idx, i in enumerate(valid_indices):
+        valid_targets.append(targets[i])
+        
+        # Window bounds: [i - k + 1, i]
+        start_idx = i - k + 1
+        end_idx = i + 1
+        
+        if rule == "product":
+            window_log_probs = log_probs[start_idx:end_idx]
+            shifted_window = torch.full_like(window_log_probs, fill_value=np.log(eps))
+            
+            for m in range(k):
+                raw_shift = (k - 1 - m) * velocity_factor
+                # Use arithmetic rounding away from zero
+                shift = math.floor(raw_shift + 0.5) if raw_shift >= 0 else math.ceil(raw_shift - 0.5)
+                
+                # Out of bounds handling
+                if abs(shift) >= n_classes:
+                    continue # shifted_window[m] remains fill_value (log(eps) or 0)
+                
+                if shift == 0:
+                    shifted_window[m] = window_log_probs[m]
+                elif shift > 0:
+                    shifted_window[m, shift:] = window_log_probs[m, :-shift]
+                else: # shift < 0
+                    abs_shift = -shift
+                    shifted_window[m, :-abs_shift] = window_log_probs[m, abs_shift:]
+                    
+            sum_log_probs = shifted_window.sum(dim=0)
+            
+            # Convert back to probabilities and normalize
+            # Subtract max for numerical stability before exp
+            max_log_prob = sum_log_probs.max()
+            unnorm_probs = torch.exp(sum_log_probs - max_log_prob)
+            
+            agg = unnorm_probs / unnorm_probs.sum()
+            agg_scores[valid_idx] = agg
+        else: # mean
+            window_probs = prob_scores[start_idx:end_idx]
+            shifted_window = torch.zeros_like(window_probs)
+            
+            for m in range(k):
+                raw_shift = (k - 1 - m) * velocity_factor
+                # Use arithmetic rounding away from zero
+                shift = math.floor(raw_shift + 0.5) if raw_shift >= 0 else math.ceil(raw_shift - 0.5)
+                
+                # Out of bounds handling
+                if abs(shift) >= n_classes:
+                    continue # shifted_window[m] remains 0
+                
+                if shift == 0:
+                    shifted_window[m] = window_probs[m]
+                elif shift > 0:
+                    shifted_window[m, shift:] = window_probs[m, :-shift]
+                else: # shift < 0
+                    abs_shift = -shift
+                    shifted_window[m, :-abs_shift] = window_probs[m, abs_shift:]
+                    
+            agg = shifted_window.mean(dim=0)
+            # Re-normalize just in case shift caused some mass to fall off the edge
+            agg_sum = agg.sum()
+            if agg_sum > 0:
+                agg = agg / agg_sum
+            agg_scores[valid_idx] = agg
+            
+    if device.type == 'cuda':
+        torch.cuda.synchronize()
+    end_time = time.perf_counter()
+    
+    latency_ms = ((end_time - start_time) / n_valid) * 1000.0
+    
+    return agg_scores, valid_targets, latency_ms
+

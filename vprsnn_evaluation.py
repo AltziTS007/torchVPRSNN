@@ -24,6 +24,10 @@ import matplotlib.pyplot as plt
 from torchvision import transforms
 from tqdm import tqdm
 import cv2
+import glob
+import os
+import subprocess
+import time
 import metrics as vpr_metrics
 
 
@@ -110,7 +114,7 @@ def get_standard_assignments(net, encoder, loader, n_exc, n_classes, device="cpu
 # 2. STANDARD VPR EVALUATION
 # ============================================================
 
-def evaluate_vpr(net, encoder, loader, assignments, n_classes, device="cpu"):
+def evaluate_vpr(net, encoder, loader, assignments, n_classes, device="cpu", simulate_spillover=False):
     """
     Evaluates VPR using Standard Assignment inference.
 
@@ -132,6 +136,119 @@ def evaluate_vpr(net, encoder, loader, assignments, n_classes, device="cpu"):
     """
     net.eval()
 
+    # Keep evaluation responsive by default. Enable profiler-based FLOPs only if requested.
+    flops_mode = os.environ.get("VPRSNN_FLOPS_MODE", "estimate").strip().lower()
+    use_profiler_flops = (flops_mode == "profiler")
+
+    def _estimate_flops_fallback(model, sample_spk):
+        """
+        Approximate dense FLOPs for one forward pass.
+        This is used only when profiler-based FLOP counting is unavailable.
+        """
+        t_steps = sample_spk.size(0)
+        n_in = model.n_in
+        n_exc = model.n_exc
+
+        # 3 dense matmuls per timestep in forward:
+        # pre@W_in_exc, spk_e@W_exc_inh, spk_i@W_inh_exc
+        # Approximate MAC as 2 FLOPs (mul + add).
+        flops_per_t = 2.0 * (
+            (n_in * n_exc) +
+            (n_exc * n_exc) +
+            (n_exc * n_exc)
+        )
+        return float(flops_per_t * t_steps)
+
+    def _measure_flops_one_query(model, sample_spk):
+        """
+        Measures FLOPs for one query sample.
+        Returns (flops, source).
+        """
+        if not use_profiler_flops:
+            return _estimate_flops_fallback(model, sample_spk), "analytic_estimate"
+
+        try:
+            activities = [torch.profiler.ProfilerActivity.CPU]
+            if sample_spk.is_cuda:
+                activities.append(torch.profiler.ProfilerActivity.CUDA)
+
+            with torch.no_grad():
+                if sample_spk.is_cuda:
+                    torch.cuda.synchronize()
+                with torch.profiler.profile(
+                    activities=activities,
+                    with_flops=True,
+                    record_shapes=False,
+                    profile_memory=False,
+                ) as prof:
+                    _ = model(sample_spk, do_stdp=False)
+                if sample_spk.is_cuda:
+                    torch.cuda.synchronize()
+
+            flops = 0.0
+            for evt in prof.key_averages():
+                evt_flops = getattr(evt, "flops", 0)
+                if evt_flops is not None:
+                    flops += float(evt_flops)
+
+            if flops > 0:
+                return flops, "torch.profiler"
+        except Exception:
+            pass
+
+        return _estimate_flops_fallback(model, sample_spk), "analytic_estimate"
+
+    def _read_rapl_energy_uj():
+        """Reads total package energy from Linux RAPL (microjoules)."""
+        energy_paths = glob.glob("/sys/class/powercap/*/energy_uj")
+        energy_paths += glob.glob("/sys/class/powercap/*/*/energy_uj")
+        if not energy_paths:
+            return None
+
+        total_uj = 0
+        found = False
+        for path in energy_paths:
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    total_uj += int(f.read().strip())
+                    found = True
+            except (OSError, ValueError):
+                continue
+
+        return total_uj if found else None
+
+    def _read_gpu_power_w():
+        """Reads instantaneous GPU power via nvidia-smi (watts)."""
+        if os.environ.get("VPRSNN_ENABLE_NVIDIA_SMI", "1").strip() in {"0", "false", "False"}:
+            return None
+
+        try:
+            proc = subprocess.run(
+                [
+                    "nvidia-smi",
+                    "--query-gpu=power.draw",
+                    "--format=csv,noheader,nounits",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=1.5,
+            )
+            values = []
+            for line in proc.stdout.strip().splitlines():
+                line = line.strip()
+                if line:
+                    values.append(float(line))
+            if not values:
+                return None
+            return float(np.mean(values))
+        except Exception:
+            return None
+
+    t_start = None
+    rapl_start_uj = None
+    gpu_power_start_w = None
+
     correct = 0
     total = 0
     all_preds = []
@@ -140,7 +257,16 @@ def evaluate_vpr(net, encoder, loader, assignments, n_classes, device="cpu"):
     similarity_matrix = []
 
     print("Evaluating VPR...")
+    if use_profiler_flops:
+        print("FLOPs mode: torch.profiler (may be slower)")
+    else:
+        print("FLOPs mode: analytic_estimate (set VPRSNN_FLOPS_MODE=profiler to enable profiler)")
     all_spike_counts_list = []
+    measured_flops = None
+    flops_source = "unavailable"
+    
+    carried_state = None
+    carried_rest_spikes = None
     
     with torch.no_grad():
         for xb, yb in tqdm(loader):
@@ -148,7 +274,43 @@ def evaluate_vpr(net, encoder, loader, assignments, n_classes, device="cpu"):
             yb = yb.to(device)
 
             spk_in = encoder(xb)
-            exc_counts = net(spk_in, do_stdp=False).sum(dim=0)
+
+            if measured_flops is None and spk_in.size(1) > 0:
+                one_query_spk = spk_in[:, :1, :]
+                measured_flops, flops_source = _measure_flops_one_query(net, one_query_spk)
+
+            if t_start is None:
+                t_start = time.perf_counter()
+                rapl_start_uj = _read_rapl_energy_uj()
+                gpu_power_start_w = _read_gpu_power_w()
+
+            if simulate_spillover:
+                # Sliding Window's ODE proxy: T=300 (350ms). Rest=150ms => ~128 timesteps
+                REST_STEPS = 128
+                exc_counts_list = []
+                for b_idx in range(xb.size(0)):
+                    spk_in_b = spk_in[:, b_idx:b_idx+1, :]
+                    
+                    # 1. Simulate Image N
+                    spikes_b, carried_state = net(spk_in_b, do_stdp=False, return_state=True, state=carried_state)
+                    spikes_b_sum = spikes_b.sum(dim=0)
+                    
+                    # 2. Add spikes fired during the PREVIOUS resting phase (Sliding Window spill-over bug)
+                    if carried_rest_spikes is not None:
+                        total_spikes = spikes_b_sum + carried_rest_spikes
+                    else:
+                        total_spikes = spikes_b_sum
+                        
+                    exc_counts_list.append(total_spikes)
+                    
+                    # 3. Simulate Resting Phase for Image N
+                    rest_spk_in = torch.zeros((REST_STEPS, 1, spk_in.size(2)), device=spk_in.device)
+                    rest_spikes, carried_state = net(rest_spk_in, do_stdp=False, return_state=True, state=carried_state)
+                    carried_rest_spikes = rest_spikes.sum(dim=0)
+                    
+                exc_counts = torch.cat(exc_counts_list, dim=0)
+            else:
+                exc_counts = net(spk_in, do_stdp=False).sum(dim=0)
 
             for b in range(xb.size(0)):
                 sample_counts = exc_counts[b]
@@ -179,12 +341,70 @@ def evaluate_vpr(net, encoder, loader, assignments, n_classes, device="cpu"):
             # Store batch spike counts
             all_spike_counts_list.append(exc_counts.cpu()) # Move to CPU to save GPU memory
 
-    accuracy = 100 * correct / total
+    accuracy = 100 * correct / max(total, 1)
+    if device.startswith("cuda") and torch.cuda.is_available():
+        torch.cuda.synchronize()
+    if t_start is None:
+        t_start = time.perf_counter()
+    t_end = time.perf_counter()
+    elapsed_s = t_end - t_start
+
+    rapl_end_uj = _read_rapl_energy_uj()
+    gpu_power_end_w = _read_gpu_power_w()
+
+    avg_power_w = None
+    energy_wh = None
+    energy_source = "unavailable"
+
+    if rapl_start_uj is not None and rapl_end_uj is not None and rapl_end_uj >= rapl_start_uj:
+        delta_uj = rapl_end_uj - rapl_start_uj
+        delta_j = delta_uj / 1e6
+        energy_wh = delta_j / 3600.0
+        avg_power_w = delta_j / max(elapsed_s, 1e-9)
+        energy_source = "linux_rapl"
+    elif gpu_power_start_w is not None and gpu_power_end_w is not None:
+        avg_power_w = 0.5 * (gpu_power_start_w + gpu_power_end_w)
+        energy_wh = avg_power_w * (elapsed_s / 3600.0)
+        energy_source = "nvidia_smi_snapshot"
+
+    effective_energy_per_inference_j = None
+    if energy_wh is not None and total > 0:
+        effective_energy_per_inference_j = float((energy_wh * 3600.0) / total)
+
+    profiler_stats = {
+        "inference_total_time_s": float(elapsed_s),
+        "inference_time_per_query_ms": float((elapsed_s / max(total, 1)) * 1000.0),
+        "num_queries": int(total),
+        "flops_per_query": float(measured_flops) if measured_flops is not None else None,
+        "flops_source": flops_source,
+        "avg_power_w": float(avg_power_w) if avg_power_w is not None else None,
+        "energy_wh": float(energy_wh) if energy_wh is not None else None,
+        "effective_energy_per_inference_j": effective_energy_per_inference_j,
+        "energy_source": energy_source,
+    }
+
     print(f"Accuracy: {accuracy:.2f}%")
+    print("\n--- Inference Profiling ---")
+    if profiler_stats["flops_per_query"] is not None:
+        print(f"FLOPs/query: {profiler_stats['flops_per_query']:.2f} (source: {profiler_stats['flops_source']})")
+    else:
+        print("FLOPs/query: unavailable")
+    print(f"Total inference time: {profiler_stats['inference_total_time_s']:.4f} s")
+    print(f"Inference time/query: {profiler_stats['inference_time_per_query_ms']:.4f} ms")
+    if profiler_stats["energy_wh"] is not None:
+        print(f"Energy: {profiler_stats['energy_wh']:.6f} Wh")
+        if profiler_stats["effective_energy_per_inference_j"] is not None:
+            print(f"Effective Energy per inference: {profiler_stats['effective_energy_per_inference_j']:.6f} J")
+        print(f"Average Power: {profiler_stats['avg_power_w']:.4f} W")
+        print(f"Energy source: {profiler_stats['energy_source']}")
+    else:
+        print("Energy/Power: unavailable (RAPL and nvidia-smi not accessible)")
     
     # Stack all spike counts
-    all_spike_counts = torch.cat(all_spike_counts_list, dim=0)
-    all_spike_counts = all_spike_counts.to(device)
+    if all_spike_counts_list:
+        all_spike_counts = torch.cat(all_spike_counts_list, dim=0).to(device)
+    else:
+        all_spike_counts = torch.empty(0, net.n_exc, device=device)
 
     similarity_matrix = np.array(similarity_matrix)
 
@@ -212,7 +432,7 @@ def evaluate_vpr(net, encoder, loader, assignments, n_classes, device="cpu"):
 
     # Stack all spike counts to form S_Q [n_query, n_exc]
     
-    return accuracy, all_preds, all_targets, similarity_matrix, prob_matrix, all_spike_counts
+    return accuracy, all_preds, all_targets, similarity_matrix, prob_matrix, all_spike_counts, profiler_stats
 
 # ============================================================
 # 4. PLOTTING FUNCTIONS (Paper Replication)
@@ -272,6 +492,11 @@ def plot_distance_matrix(similarity_matrix, save_path="vpr_distance_matrix.png",
     plt.close()
     print(f"Saved Distance Matrix to {save_path}")
     
+def calculate_auc_pr(similarity_matrix, targets):
+    S_in, GThard = _prepare_metrics_data(similarity_matrix, targets)
+    P, R = vpr_metrics.createPR(S_in, GThard, matching='single', n_thresh=100)
+    return auc(R, P) * 100.0
+
 def plot_pr_curve(similarity_matrix, targets, n_classes, save_path="pr_curve.png"):
     """
     Computes and plots Precision-Recall curve using metrics.py
@@ -589,7 +814,7 @@ class NordlandDataset(Dataset):
     It reads a flat directory of images, sorts them by filename, 
     and assigns the index as the label.
     """
-    def __init__(self, dir_path, transform=None):
+    def __init__(self, dir_path, transform=None, valid_files=None):
         self.dir_path = dir_path
         self.transform = transform
         
@@ -597,10 +822,15 @@ class NordlandDataset(Dataset):
         valid_exts = {".png", ".jpg", ".jpeg", ".bmp"}
         
         # Get all image files and sort them to ensure alignment
-        self.image_files = sorted([
+        files = [
             f for f in os.listdir(dir_path) 
             if os.path.splitext(f)[1].lower() in valid_exts
-        ])
+        ]
+        
+        if valid_files is not None:
+            files = [f for f in files if f in valid_files]
+            
+        self.image_files = sorted(files)
         
         if len(self.image_files) == 0:
             raise ValueError(f"No images found in {dir_path}")
@@ -717,7 +947,68 @@ def check_dataset_alignment(ds1, ds2):
     else:
         raise ValueError(f"Found {mismatches} filename mismatches.")
 
-def get_nordland_loaders(train_path, test_path, batch_size=64, max_samples=None, shuffle_train=True):
+def get_oxford_10m_subset(sun_csv_path, sun_ins_path):
+    """
+    Samples frames from the Oxford dataset at ~10-meter intervals 
+    using the original timestamps and INS data.
+    """
+    import csv
+    import math
+    import numpy as np
+
+    # Load INS data
+    ins_timestamps = []
+    northing = []
+    easting = []
+    with open(sun_ins_path, 'r') as f:
+        reader = csv.reader(f)
+        next(reader) # skip header
+        for row in reader:
+            ins_timestamps.append(int(row[0]))
+            northing.append(float(row[5]))
+            easting.append(float(row[6]))
+
+    ins_timestamps = np.array(ins_timestamps)
+    northing = np.array(northing)
+    easting = np.array(easting)
+
+    # Read frame timestamps
+    frame_ts = []
+    frame_names = []
+    with open(sun_csv_path, 'r') as f:
+        reader = csv.reader(f)
+        next(reader)
+        for row in reader:
+            frame_names.append(row[0])
+            orig_name = row[1]
+            ts = int(orig_name.replace('.png', ''))
+            frame_ts.append(ts)
+
+    sampled_frames = set()
+    last_n = None
+    last_e = None
+
+    # Interpolate positions
+    frame_n = np.interp(frame_ts, ins_timestamps, northing)
+    frame_e = np.interp(frame_ts, ins_timestamps, easting)
+
+    for i in range(len(frame_names)):
+        n = frame_n[i]
+        e = frame_e[i]
+        if last_n is None:
+            sampled_frames.add(frame_names[i])
+            last_n = n
+            last_e = e
+        else:
+            dist = math.sqrt((n - last_n)**2 + (e - last_e)**2)
+            if dist >= 10.0:
+                sampled_frames.add(frame_names[i])
+                last_n = n
+                last_e = e
+
+    return sampled_frames
+
+def get_nordland_loaders(train_path, test_path, batch_size=64, max_samples=None, start_idx=0, shuffle_train=True, oxford_10m_sampling=False):
     """
     Creates loaders.
     train_path can be a string or a list of strings (datasets will be concatenated).
@@ -732,9 +1023,17 @@ def get_nordland_loaders(train_path, test_path, batch_size=64, max_samples=None,
         PatchNormalization(patch_size=7)
     ])
     
+    valid_files = None
+    if oxford_10m_sampling:
+        sun_csv_path = 'secondery/temp_sliding_window/dataset_imagenames/ORC_Sun_timestamps.csv'
+        sun_ins_path = 'ORC/ORC_sun/2015-08-12-15-04-18/ins.csv'
+        print(f"Applying Oxford 10-meter spatial sampling using {sun_ins_path}...")
+        valid_files = get_oxford_10m_subset(sun_csv_path, sun_ins_path)
+        print(f"Sampled {len(valid_files)} frames from Oxford Sun traverse.")
+
     # 1. Load Test Dataset first (Reference for alignment)
     print(f"Loading Testing Data from: {test_path}")
-    test_ds = NordlandDataset(dir_path=test_path, transform=transform)
+    test_ds = NordlandDataset(dir_path=test_path, transform=transform, valid_files=valid_files)
     
     # 2. Load Training Dataset(s)
     if isinstance(train_path, str):
@@ -748,7 +1047,7 @@ def get_nordland_loaders(train_path, test_path, batch_size=64, max_samples=None,
     
     for tp in train_paths:
         print(f"Loading Training Data from: {tp}")
-        ds = NordlandDataset(dir_path=tp, transform=transform)
+        ds = NordlandDataset(dir_path=tp, transform=transform, valid_files=valid_files)
         
         # Check counts
         if len(ds) != len(test_ds):
@@ -759,20 +1058,30 @@ def get_nordland_loaders(train_path, test_path, batch_size=64, max_samples=None,
         
         train_datasets.append(ds)
 
-    # 3. Apply limits and alignment checks
-    if max_samples is not None:
-        print(f"Limiting dataset to {max_samples} samples.")
-        min_len = min(min_len, max_samples)
+    # 3. Find intersection of filenames to ensure alignment
+    common_files = set(test_ds.image_files)
+    for ds in train_datasets:
+        common_files = common_files.intersection(set(ds.image_files))
+    
+    common_files = sorted(list(common_files))
+    
+    if len(common_files) == 0:
+        raise ValueError("No common images found across datasets! Cannot align.")
         
-    # Truncate all datasets to min_len
-    test_ds.image_files = test_ds.image_files[:min_len]
-    print(f"Test dataset truncated to {len(test_ds)} samples.")
+    print(f"Found {len(common_files)} aligned images across all datasets.")
 
-    for i, ds in enumerate(train_datasets):
-        ds.image_files = ds.image_files[:min_len]
-        # Verify alignment with test set
-        print(f"Checking alignment for Train Set {i}...")
-        check_dataset_alignment(ds, test_ds)
+    # Apply max_samples and start_idx
+    if max_samples is not None:
+        print(f"Limiting dataset to {max_samples} samples starting from index {start_idx}.")
+        common_files = common_files[start_idx:start_idx+max_samples]
+    else:
+        common_files = common_files[start_idx:]
+        
+    min_len = len(common_files)
+    
+    test_ds.image_files = common_files.copy()
+    for ds in train_datasets:
+        ds.image_files = common_files.copy()
         
     # 4. Concatenate Train Datasets
     if len(train_datasets) > 1:
@@ -783,7 +1092,7 @@ def get_nordland_loaders(train_path, test_path, batch_size=64, max_samples=None,
     
     print(f"Creating Loaders (Shuffle Train: {shuffle_train})...")
     train_loader = torch.utils.data.DataLoader(full_train_ds, batch_size=batch_size, shuffle=shuffle_train)
-    test_loader = torch.utils.data.DataLoader(test_ds, batch_size=batch_size, shuffle=True)
+    test_loader = torch.utils.data.DataLoader(test_ds, batch_size=batch_size, shuffle=False)
     
     # Return num_classes based on the logical places (min_len)
     return train_loader, test_loader, min_len

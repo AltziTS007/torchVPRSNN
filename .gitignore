@@ -5,3 +5,17 @@ temp/
 media/
 nordland_clean/
 nordland_clean.zip
+benchmark_log/
+baselines/
+hussaini_full_results_oxford/
+hussaini_full_results/
+ORC/
+secondary/
+Synthia-NightToFall/
+run_netvlad_nordland.py
+run_netvlad_oxford.py
+run_sad_baseline.py
+__pycache__/
+thirteenth_draft.pdf
+sliding_window_full_results/
+sliding_window_full_results_oxford/

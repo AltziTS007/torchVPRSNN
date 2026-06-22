@@ -45,7 +45,11 @@ class torchVPRSNN(nn.Module):
         w_ie=10.0,
         thr_eta=0.001,
         target_rate=0.01,
-        device="cpu"
+        max_samples=100,
+        device="cpu",
+        wta_mode="hard",
+        enable_homeostasis=True,
+        enable_weight_norm=True
     ):
         super().__init__()
 
@@ -55,6 +59,10 @@ class torchVPRSNN(nn.Module):
         self.t_steps = t_steps
         self.device = device
         self.w_max = w_max
+        
+        self.wta_mode = wta_mode
+        self.enable_homeostasis = enable_homeostasis
+        self.enable_weight_norm = enable_weight_norm
 
         # ----------------------------------------------------
         # Plastic Input → Excitatory weights (STDP)
@@ -94,19 +102,22 @@ class torchVPRSNN(nn.Module):
         self.target_rate = target_rate
 
     def _normalize_w(self):
-        normalize_weights_column(self.w_in_exc)
+        if self.enable_weight_norm:
+            normalize_weights_column(self.w_in_exc)
 
-    def forward(self, spk_in, do_stdp=True, monitor=False):
+    def forward(self, spk_in, do_stdp=True, monitor=False, state=None, return_state=False):
         """
         Run temporal SNN simulation.
         """
         T, B, _ = spk_in.shape
 
-        mem_e = torch.zeros(B, self.n_exc, device=self.device)
-        mem_i = torch.zeros(B, self.n_inh, device=self.device)
-
-        pre_trace = torch.zeros(B, self.n_in, device=self.device)
-        post_trace = torch.zeros(B, self.n_exc, device=self.device)
+        if state is None:
+            mem_e = torch.zeros(B, self.n_exc, device=self.device)
+            mem_i = torch.zeros(B, self.n_inh, device=self.device)
+            pre_trace = torch.zeros(B, self.n_in, device=self.device)
+            post_trace = torch.zeros(B, self.n_exc, device=self.device)
+        else:
+            mem_e, mem_i, pre_trace, post_trace = state
 
         spike_rec = []
         
@@ -125,15 +136,17 @@ class torchVPRSNN(nn.Module):
             spk_e, mem_e = self.lif_e(cur_e, mem_e)
 
             # Winner-Take-All
-            spk_e = hard_wta_step(spk_e, cur_e)
+            if self.wta_mode == "hard":
+                spk_e = hard_wta_step(spk_e, cur_e)
 
             # Exc → Inh → Exc inhibition
-            cur_i = spk_e @ self.w_exc_inh
-            spk_i, mem_i = self.lif_i(cur_i, mem_i)
-            inh_e = spk_i @ self.w_inh_exc
+            if self.wta_mode in ["hard", "soft"]:
+                cur_i = spk_e @ self.w_exc_inh
+                spk_i, mem_i = self.lif_i(cur_i, mem_i)
+                inh_e = spk_i @ self.w_inh_exc
 
-            mem_e -= inh_e
-            mem_e = torch.clamp(mem_e, min=-2.0)
+                mem_e -= inh_e
+                mem_e = torch.clamp(mem_e, min=-2.0)
 
             spike_rec.append(spk_e)
 
@@ -160,10 +173,16 @@ class torchVPRSNN(nn.Module):
                     history["dw_minus"] += dw_m.cpu().numpy()
 
             # Homeostatic threshold adaptation
-            if do_stdp: # Only adapt during training
+            if do_stdp and self.enable_homeostasis: # Only adapt during training
                 homeostatic_threshold_update(self.thr_e, spk_e, self.target_rate, self.thr_eta)
             
-        if monitor:
-            return torch.stack(spike_rec, dim=0), history
-
-        return torch.stack(spike_rec, dim=0)
+        new_state = (mem_e, mem_i, pre_trace, post_trace)
+        
+        if return_state:
+            if monitor:
+                return torch.stack(spike_rec, dim=0), history, new_state
+            return torch.stack(spike_rec, dim=0), new_state
+        else:
+            if monitor:
+                return torch.stack(spike_rec, dim=0), history
+            return torch.stack(spike_rec, dim=0)

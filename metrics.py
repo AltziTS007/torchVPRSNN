@@ -80,11 +80,18 @@ def createPR(S_in, GThard, GTsoft=None, matching='multi', n_thresh=100):
         
         TP = np.count_nonzero(GT & B)  # True Positives
         FP = np.count_nonzero((~GT) & B)  # False Positives
-        FN  = np.count_nonzero(GT & (~B))  # False Negatives
-
+        
+        if matching == 'single':
+            # In single-best-match VPR, every query has exactly 1 true target.
+            # If we don't score a TP for a query, we missed its true target.
+            # Thus, the number of missed targets (FN) is the total number of queries minus TP.
+            FN = len(GT) - TP
+        else:
+            FN = np.count_nonzero(GT & (~B))  # False Negatives for multi-match
+        
         # Handle division by zero for precision
-        precision = TP / (TP + FP)
-        recall = TP / (TP + FN) 
+        precision = TP / (TP + FP) if (TP + FP) > 0 else 1.0
+        recall = TP / (TP + FN) if (TP + FN) > 0 else 0.0 
         
         P.append(precision)  # Precision
         R.append(recall)     # Recall
@@ -159,7 +166,7 @@ def recallAtK(S, GT, K=1):
 
     # select K highest similarities
     i = S.argsort(0)[-K:,:]
-    j = np.tile(np.arange(i.shape[1]), [K, 1])
+    j = np.tile(np.arange(i.shape[1]), [i.shape[0], 1])
     GT = GT[i, j]
 
     # recall@K
