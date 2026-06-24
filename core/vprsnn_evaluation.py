@@ -1025,7 +1025,8 @@ def get_nordland_loaders(train_path, test_path, batch_size=64, max_samples=None,
     
     valid_files = None
     if oxford_10m_sampling:
-        sun_csv_path = 'secondery/temp_sliding_window/dataset_imagenames/ORC_Sun_timestamps.csv'
+        ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        sun_csv_path = os.path.join(ROOT_DIR, 'tools/dataset_imagenames/ORC_Sun_timestamps.csv')
         sun_ins_path = 'ORC/ORC_sun/2015-08-12-15-04-18/ins.csv'
         print(f"Applying Oxford 10-meter spatial sampling using {sun_ins_path}...")
         valid_files = get_oxford_10m_subset(sun_csv_path, sun_ins_path)

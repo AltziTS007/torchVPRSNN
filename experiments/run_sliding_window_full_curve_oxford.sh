@@ -4,8 +4,8 @@ set -u
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # Array of chunk sizes (N places) to test
-CHUNK_SIZES=(25 50 100 150 200 250 300 350 400)
-TOTAL_PLACES=400
+CHUNK_SIZES=(25 50 100 150 200 250 300 350 390)
+TOTAL_PLACES=390
 
 echo "============================================================"
 echo "    Sliding Window Protocol - OXFORD FULL CURVE    "

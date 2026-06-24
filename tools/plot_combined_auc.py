@@ -62,7 +62,7 @@ def main():
     plt.ylabel('AUC PR (%)', fontsize=12)
     plt.grid(True, linestyle='--', alpha=0.7)
     plt.ylim(0, 105)
-    plt.legend(loc="lower left", fontsize=12)
+    plt.legend(loc="upper right", fontsize=12)
     
     # Save the plot
     save_path = 'ablation_sliding_window_combined_auc.png'
