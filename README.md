@@ -1,5 +1,15 @@
 # Visual Place Recognition Using Rate-Encoded Spiking Neural Networks with Discrete STDP Learning
 
+## Qualitative Performance (SNN vs. SAD)
+
+The following visualizations compare the sequential retrieval accuracy (k=5) of our Spiking Neural Network against the Sum of Absolute Differences (SAD) baseline on two major VPR benchmarks.
+
+### Nordland Dataset (Spring/Fall vs Summer)
+![Nordland SNN vs SAD Retrieval](figures/seq_retrieval_comparison_k5.gif)
+
+### Oxford RobotCar Dataset (Sun/Rain vs Dusk)
+![Oxford SNN vs SAD Retrieval](figures/seq_retrieval_comparison_k5_oxford.gif)
+
 ## Architecture
 
 The system is built with a highly modular architecture, encapsulating different SNN dynamics and evaluation metrics:
