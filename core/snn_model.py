@@ -217,7 +217,7 @@ def main():
         "N_EXC": 400,
         
         # Rate Encoder
-        "t_steps": 150,
+        "t_steps": 200,
         "rate_scale": 0.25,
         
         # Neuron / STDP Params (Diehl & Cook)

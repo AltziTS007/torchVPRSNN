@@ -8,10 +8,10 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 #   ./run_max_samples_benchmark.sh
 #   ./run_max_samples_benchmark.sh --device cuda --save-results false
 
-REPEATS=15
-MAX_SAMPLES_LIST=(25 50 100 150 200 250 300 350 400)
+REPEATS=10
+MAX_SAMPLES_LIST=(100)
 SCRIPT_PATH="$ROOT_DIR/core/snn_model.py"
-SCRIPT_ARGS="--dataset nordland"
+SCRIPT_ARGS="--dataset oxford --sample-10m"
 
 DEVICE="auto"
 SAVE_RESULTS="true"

@@ -19,3 +19,13 @@ __pycache__/
 thirteenth_draft.pdf
 sliding_window_full_results/
 sliding_window_full_results_oxford/
+MDDRobots_dataset/
+ablation_energy_vs_r100p.png
+ablation_energy_vs_r100p_oxford.png
+ablation_gradient_nordland_energy.png
+ablation_gradient_nordland_latency.png
+ablation_latency_vs_r100p.png
+ablation_latency_vs_r100p_oxford.png
+energy_methodology.tex
+tsteps_ablation_results/
+tsteps_ablation_results_oxford/
