@@ -248,8 +248,9 @@ def sliding_window_aggregation(prob_scores, targets, k, rule="product", velocity
     start_time = time.perf_counter()
     
     eps = 1e-8
-    if rule == "product":
-        log_probs = torch.log(prob_scores + eps)
+    # NOTE: Compute log on-the-fly per window to avoid OOM on large datasets.
+    # Pre-computing the full log_probs tensor would duplicate a [n_query, n_classes]
+    # matrix in memory, which exceeds GPU memory for datasets > ~10k samples.
     
     for valid_idx, i in enumerate(valid_indices):
         valid_targets.append(targets[i])
@@ -259,7 +260,7 @@ def sliding_window_aggregation(prob_scores, targets, k, rule="product", velocity
         end_idx = i + 1
         
         if rule == "product":
-            window_log_probs = log_probs[start_idx:end_idx]
+            window_log_probs = torch.log(prob_scores[start_idx:end_idx] + eps)
             shifted_window = torch.full_like(window_log_probs, fill_value=np.log(eps))
             
             for m in range(k):

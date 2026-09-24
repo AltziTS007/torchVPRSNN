@@ -1,0 +1,24 @@
+
+
+================================================================================
+TABLE IV: OPERATIONAL ENVELOPE OF SEQUENCE AGGREGATION (k = 5, PRODUCT RULE)
+NORDLAND, 100 PLACES (Means over 10 seeds: 16-25)
+================================================================================
+Condition                      | Mean R@100P (%) | Std Dev   
+------------------------------------------------------------
+Baseline (1.0x)                | 100.00          | ± 0.00
+Velocity mismatch (+10%)       | 100.00          | ± 0.00
+Velocity mismatch (-10%)       | 100.00          | ± 0.00
+Velocity mismatch (+20%)       |   9.27          | ±11.57
+Velocity mismatch (-20%)       |   5.42          | ±10.84
+Velocity mismatch (+50%)       |   0.00          | ± 0.00
+Velocity mismatch (-50%)       |   0.00          | ± 0.00
+Reverse traversal              |   0.00          | ± 0.00
+10% dropped frames             | 100.00          | ± 0.00
+50% dropped frames             |  90.00          | ±30.00
+Route deviations               | 100.00          | ± 0.00
+
+--- Combined Velocity Mismatches ---
+Velocity mismatch (±10%)       | 100.00          | ± 0.00
+Velocity mismatch (±20%)       |   7.34          | ±11.38
+Velocity mismatch (±50%)       |   0.00          | ± 0.00
