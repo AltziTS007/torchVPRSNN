@@ -53,6 +53,8 @@ from utils import Logger, plot_stdp_monitor
 
 from vprsnn_evaluation import (
     get_nordland_loaders, 
+    get_mddrobots_loaders,
+    get_mddrobots_room_loaders,
     get_standard_assignments, 
     evaluate_vpr, 
     plot_weights,
@@ -119,9 +121,75 @@ def _parse_args():
     )
     parser.add_argument(
         "--dataset",
-        choices=["nordland", "oxford"],
+        choices=["nordland", "oxford", "mddrobots", "mddrobots_rooms"],
         default="nordland",
-        help="Dataset to use: 'nordland' (default) or 'oxford'.",
+        help="Dataset to use: 'nordland' (default), 'oxford', 'mddrobots', or 'mddrobots_rooms'.",
+    )
+    parser.add_argument(
+        "--descriptor",
+        choices=["raw", "dog", "spatial_pyramid"],
+        default="raw",
+        help="Input descriptor: 'raw' (default pixels+PatchNorm), 'dog' (Difference-of-Gaussians), 'spatial_pyramid' (spatial pyramid+HOG).",
+    )
+    parser.add_argument(
+        "--room",
+        type=str,
+        default="Corridor1_RGB",
+        help="MDDRobots room name (e.g., Corridor1_RGB, D3A_RGB, F102_RGB). Only used with --dataset mddrobots.",
+    )
+    parser.add_argument(
+        "--frame-skip",
+        type=int,
+        default=None,
+        help="Take every Nth frame for subsampling (default: 4 for mddrobots, 1 otherwise).",
+    )
+    parser.add_argument(
+        "--resolution",
+        type=int,
+        default=28,
+        help="Image resolution. 28 -> 28x28 images, 56 -> 56x56 images.",
+    )
+    parser.add_argument(
+        "--n-exc",
+        type=int,
+        default=400,
+        help="Number of excitatory neurons (default: 400). Consider increasing for higher resolutions.",
+    )
+    parser.add_argument(
+        "--thr-e-init",
+        type=float,
+        default=None,
+        help="Initial excitatory threshold. Auto-scales with resolution if not provided.",
+    )
+    parser.add_argument(
+        "--a-plus",
+        type=float,
+        default=None,
+        help="STDP learning rate. Auto-scales with resolution if not provided.",
+    )
+    parser.add_argument(
+        "--target-rate",
+        type=float,
+        default=0.01,
+        help="Homeostasis target firing rate (probability of spike per timestep).",
+    )
+    parser.add_argument(
+        "--thr-eta",
+        type=float,
+        default=0.001,
+        help="Homeostasis learning rate (how fast thresholds adapt).",
+    )
+    parser.add_argument(
+        "--max-seq-len",
+        type=int,
+        default=15,
+        help="Maximum sequence length for the sliding window sweep.",
+    )
+    parser.add_argument(
+        "--tolerance",
+        type=int,
+        default=0,
+        help="Tolerance window for ground truth matches (e.g., +/- N frames).",
     )
     parser.add_argument(
         "--wta-mode",
@@ -186,6 +254,22 @@ def _parse_args():
     )
     return parser.parse_args()
 
+def calc_acc(scores, targets, tol=0):
+    """Calculate accuracy with optional tolerance."""
+    if isinstance(scores, torch.Tensor):
+        scores = scores.cpu().numpy()
+    if isinstance(targets, torch.Tensor):
+        targets = targets.cpu().numpy()
+        
+    preds = np.argmax(scores, axis=1)
+    if tol == 0:
+        correct = np.sum(preds == targets)
+    else:
+        diffs = np.abs(preds - targets)
+        correct = np.sum(diffs <= tol)
+    
+    return correct / len(targets) * 100.0
+
 def main():
     """
     End-to-end experiment:
@@ -201,6 +285,12 @@ def main():
     # --------------------------------------------------------
     # Hyperparameters & Configuration
     # --------------------------------------------------------
+    # No auto-scaling of thr/a_plus with resolution.
+    # L2 weight normalization + homeostasis handle scale adaptation.
+    # Scaling a_plus kills learning at higher dims (update too small to survive L2 renorm).
+    default_thr = 1.5
+    default_a_plus = 5e-4
+
     params = {
         # Data paths
         "TRAIN_PATH": [],
@@ -213,8 +303,9 @@ def main():
         "SAVE_RESULTS": True,
         
         # Architecture
-        "N_IN": 784,
-        "N_EXC": 400,
+        "RESOLUTION": args.resolution,
+        "N_IN": args.resolution * args.resolution,
+        "N_EXC": args.n_exc,
         
         # Rate Encoder
         "t_steps": 200,
@@ -223,21 +314,22 @@ def main():
         # Neuron / STDP Params (Diehl & Cook)
         "beta_e": 0.95,
         "beta_i": 0.90,
-        "thr_e_init": 1.5,
+        "thr_e_init": args.thr_e_init if args.thr_e_init is not None else default_thr,
         "thr_i": 1.0,
-        "a_plus": 5e-4,
+        "a_plus": args.a_plus if args.a_plus is not None else default_a_plus,
         "a_minus": 5e-6,
         "tau_pre": 15.0,
         "tau_post": 15.0,
         "w_max": 1.0,
         "w_ei": 1.0,
         "w_ie": 10.0,
-        "thr_eta": 0.001,
-        "target_rate": 0.01,
+        "thr_eta": args.thr_eta,
+        "target_rate": args.target_rate,
         "MAX_SAMPLES": 100,
         "SEED": args.seed,
         "SAVE_MODEL": args.save_model,
-        "LOAD_MODEL": args.load_model
+        "LOAD_MODEL": args.load_model,
+        "DESCRIPTOR": getattr(args, 'descriptor', 'raw'),
     }
 
     # Set random seeds immediately for reproducibility
@@ -251,6 +343,10 @@ def main():
             os.path.join(ROOT_DIR, "ORC/ORC_rain/2015-10-29-12-18-17/stereo/left")
         ]
         params["TEST_PATH"] = os.path.join(ROOT_DIR, "ORC/ORC_dusk/2014-11-21-16-07-03/stereo/left")
+    elif args.dataset in ["mddrobots", "mddrobots_rooms"]:
+        params["MDDROBOTS_ROOT"] = os.path.join(ROOT_DIR, "MDDRobots_dataset")
+        params["ROOM"] = args.room
+        params["FRAME_SKIP"] = args.frame_skip if args.frame_skip is not None else 4
     else:
         params["TRAIN_PATH"] = [os.path.join(ROOT_DIR, "nordland_clean/data/spring"), os.path.join(ROOT_DIR, "nordland_clean/data/fall")]
         params["TEST_PATH"] = os.path.join(ROOT_DIR, "nordland_clean/data/summer")
@@ -282,6 +378,7 @@ def main():
     params["STANDARD_ASSIGNMENT_ONLY"] = args.standard_assignment_only
     params["SIMULATE_SPILLOVER"] = args.simulate_spillover
     params["SAMPLE_10M"] = args.sample_10m
+    params["MAX_SEQ_LEN"] = args.max_seq_len
 
     if params["SIMULATE_SPILLOVER"]:
         print("Spill-over simulation active: Enforcing BATCH_SIZE=1 to preserve temporal sequence.")
@@ -331,15 +428,41 @@ def main():
     # Data loading
     # --------------------------------------------------------
     try:
-        train_loader, test_loader, num_classes = get_nordland_loaders(
-            train_path=params["TRAIN_PATH"],
-            test_path=params["TEST_PATH"],
-            batch_size=params["BATCH_SIZE"],
-            max_samples=params["MAX_SAMPLES"],
-            start_idx=args.start_idx,
-            shuffle_train=True,
-            oxford_10m_sampling=params.get("SAMPLE_10M", False)
-        )
+        if args.dataset == "mddrobots":
+            train_loader, test_loader, num_classes = get_mddrobots_loaders(
+                dataset_root=params["MDDROBOTS_ROOT"],
+                room_name=params["ROOM"],
+                batch_size=params["BATCH_SIZE"],
+                max_samples=params["MAX_SAMPLES"],
+                start_idx=args.start_idx,
+                shuffle_train=True,
+                frame_skip=params["FRAME_SKIP"],
+                resolution=params["RESOLUTION"]
+            )
+        elif args.dataset == "mddrobots_rooms":
+            train_loader, test_loader, num_classes, n_in = get_mddrobots_room_loaders(
+                dataset_root=params["MDDROBOTS_ROOT"],
+                batch_size=params["BATCH_SIZE"],
+                max_samples=params["MAX_SAMPLES"],
+                shuffle_train=True,
+                frame_skip=params["FRAME_SKIP"],
+                resolution=params["RESOLUTION"],
+                descriptor=args.descriptor
+            )
+            params["N_IN"] = n_in
+            # Force tolerance to 0 for room classification
+            args.tolerance = 0
+        else:
+            train_loader, test_loader, num_classes = get_nordland_loaders(
+                train_path=params["TRAIN_PATH"],
+                test_path=params["TEST_PATH"],
+                batch_size=params["BATCH_SIZE"],
+                max_samples=params["MAX_SAMPLES"],
+                start_idx=args.start_idx,
+                shuffle_train=True,
+                oxford_10m_sampling=params.get("SAMPLE_10M", False),
+                resolution=params["RESOLUTION"]
+            )
     except Exception as e:
         print("Dataset loading failed:", e)
         return
@@ -383,7 +506,11 @@ def main():
     
     if params["LOAD_MODEL"] and os.path.exists(params["LOAD_MODEL"]):
         print(f"Loading trained model from: {params['LOAD_MODEL']}")
-        net.load_state_dict(torch.load(params["LOAD_MODEL"], map_location=DEVICE))
+        checkpoint = torch.load(params["LOAD_MODEL"], map_location=DEVICE)
+        if "state_dict" in checkpoint:
+            net.load_state_dict(checkpoint["state_dict"])
+        else:
+            net.load_state_dict(checkpoint)
         print("Skipping STDP training.")
     else:
         print("Starting STDP training...")
@@ -424,15 +551,65 @@ def main():
             # Save weights every 10 epochs
             if save_results and epoch % 10 == 0:
                 epoch_weight_path = os.path.join(weights_dir, f"epoch_{epoch}_weights.png")
-                plot_weights(net.w_in_exc, params["N_EXC"], save_path=epoch_weight_path)
+                plot_weights(net.w_in_exc, params["N_EXC"], n_side=params["RESOLUTION"], save_path=epoch_weight_path)
                 
-        if params["SAVE_MODEL"]:
-            torch.save(net.state_dict(), params["SAVE_MODEL"])
-            print(f"Saved trained model checkpoint to: {params['SAVE_MODEL']}")
+    # --------------------------------------------------------
+    # Auto-save trained weights to weights/ folder
+    # --------------------------------------------------------
+    weights_save_dir = os.path.join(ROOT_DIR, "weights")
+    os.makedirs(weights_save_dir, exist_ok=True)
 
-    # --------------------------------------------------------
-    # Neuron-place assignment
-    # --------------------------------------------------------
+    # Build descriptive filename from key network characteristics
+    timestamp_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    desc_parts = [
+        "vprsnn",
+        f"{args.dataset}",
+        f"{params['N_EXC']}exc",
+        f"{params['N_IN']}in",
+        f"{params['EPOCHS']}ep",
+        f"{params['t_steps']}ts",
+        f"{params['WTA_MODE']}wta",
+        f"{'homeo' if params['ENABLE_HOMEOSTASIS'] else 'nohomeo'}",
+        f"{'wnorm' if params['ENABLE_WEIGHT_NORM'] else 'nownorm'}",
+        f"{params['RESOLUTION']}res",
+        f"seed{params['SEED']}",
+        timestamp_str,
+    ]
+    if args.dataset in ["mddrobots", "mddrobots_rooms"]:
+        desc_parts.insert(2, params["ROOM"])
+    if params.get("DESCRIPTOR", "raw") != "raw":
+        desc_parts.insert(2, params["DESCRIPTOR"])
+    weights_filename = "_".join(desc_parts) + ".pt"
+    weights_save_path = os.path.join(weights_save_dir, weights_filename)
+
+    auto_checkpoint = {
+        "state_dict": net.state_dict(),
+        "params": {
+            "dataset": args.dataset,
+            "n_in": params["N_IN"],
+            "n_exc": params["N_EXC"],
+            "resolution": params["RESOLUTION"],
+            "epochs": params["EPOCHS"],
+            "t_steps": params["t_steps"],
+            "wta_mode": params["WTA_MODE"],
+            "enable_homeostasis": params["ENABLE_HOMEOSTASIS"],
+            "enable_weight_norm": params["ENABLE_WEIGHT_NORM"],
+            "seed": params["SEED"],
+            "a_plus": params["a_plus"],
+            "a_minus": params["a_minus"],
+            "thr_e_init": params["thr_e_init"],
+            "target_rate": params["target_rate"],
+            "thr_eta": params["thr_eta"],
+            "descriptor": params.get("DESCRIPTOR", "raw"),
+        },
+        "timestamp": timestamp_str,
+    }
+    if args.dataset in ["mddrobots", "mddrobots_rooms"]:
+        auto_checkpoint["params"]["room"] = params["ROOM"]
+
+    torch.save(auto_checkpoint, weights_save_path)
+    print(f"Auto-saved trained weights to: {weights_save_path}")
+
     assignments, avg_rates = get_standard_assignments(
         net=net,
         encoder=encoder,
@@ -441,6 +618,20 @@ def main():
         n_classes=num_classes,
         device=DEVICE
     )
+
+    if params["SAVE_MODEL"]:
+        checkpoint = {
+            "state_dict": net.state_dict(),
+            "assignments": assignments.cpu(),
+            "num_classes": num_classes,
+            "resolution": params["RESOLUTION"],
+            "n_exc": params["N_EXC"]
+        }
+        if hasattr(train_loader.dataset, "rooms"):
+            checkpoint["room_names"] = train_loader.dataset.rooms
+            
+        torch.save(checkpoint, params["SAVE_MODEL"])
+        print(f"Saved trained model and assignments to: {params['SAVE_MODEL']}")
 
     # --------------------------------------------------------
     # Evaluation
@@ -452,7 +643,8 @@ def main():
         assignments=assignments,
         n_classes=num_classes,
         device=DEVICE,
-        simulate_spillover=params.get("SIMULATE_SPILLOVER", False)
+        simulate_spillover=params.get("SIMULATE_SPILLOVER", False),
+        tolerance=args.tolerance
     )
     S_Q = S_Q_cpu.to(DEVICE)
 
@@ -485,12 +677,6 @@ def main():
         # 4. Probability-based (on Weighted)
         scores_prob = probability_based_assignment(scores_weighted)
         
-        # Accuracies for table
-        def calc_acc(scores, targets):
-            preds = scores.argmax(dim=1).cpu().numpy()
-            correct = (preds == targets).sum()
-            return 100 * correct / len(targets)
-            
         acc_w = calc_acc(scores_weighted, targets)
         acc_p = calc_acc(scores_prob, targets)
     
@@ -503,7 +689,12 @@ def main():
         # 5. Sequential Frame Aggregation (Sliding Window Sweep)
         # --------------------------------------------------------
         print("\n--- Running Sequential Frame Aggregation Sweep ---")
-        k_values = [1, 3, 5, 7, 10, 15]
+        base_k_values = [1, 3, 5, 7, 10, 15, 20, 25, 30, 40, 50]
+        k_values = [k for k in base_k_values if k <= params["MAX_SEQ_LEN"]]
+        if params["MAX_SEQ_LEN"] not in k_values:
+            k_values.append(params["MAX_SEQ_LEN"])
+            k_values.sort()
+            
         rules = ['product', 'mean']
         
         # We will collect R@100P for plotting
@@ -527,9 +718,9 @@ def main():
                 agg_scores_np = agg_scores_t.cpu().numpy()
                 valid_targets_np = np.array(valid_targets_list)
                 
-                r100p = calculate_r_at_100p(agg_scores_np, valid_targets_np)
-                p100r = calculate_p_at_100r(agg_scores_np, valid_targets_np)
-                acc = calc_acc(agg_scores_t, valid_targets_np)
+                r100p = calculate_r_at_100p(agg_scores_np, valid_targets_np, tolerance=args.tolerance)
+                p100r = calculate_p_at_100r(agg_scores_np, valid_targets_np, tolerance=args.tolerance)
+                acc = calc_acc(agg_scores_t, valid_targets_np, tol=args.tolerance)
                 
                 print(f"    k={k:2d} (N={len(valid_targets_list)}): R@100P = {r100p:5.2f}% | P@100R = {p100r:5.2f}% | Acc = {acc:5.2f}%")
                 

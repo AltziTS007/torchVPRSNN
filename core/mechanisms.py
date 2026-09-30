@@ -124,7 +124,7 @@ def hard_wta_step(spikes, currents):
         
     return spikes
 
-def homeostatic_threshold_update(thresholds, spikes, target_rate, eta, min_thresh=0.6, max_thresh=3.0):
+def homeostatic_threshold_update(thresholds, spikes, target_rate, eta, min_thresh=0.6, max_thresh=100.0):
     """
     Updates firing thresholds to maintain a target firing rate.
     

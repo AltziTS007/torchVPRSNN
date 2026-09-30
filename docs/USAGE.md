@@ -25,6 +25,7 @@ This runs an unsupervised STDP training loop and evaluation. By default the scri
 - Create a timestamped `results/` subdirectory
 - Save `hyperparameters.json` and `output.log`
 - Store weight visualizations and STDP monitor plots
+- Auto-save a model checkpoint to the `weights/` directory (see step 7)
 
 4) Quick configuration
 
@@ -43,15 +44,36 @@ This runs an unsupervised STDP training loop and evaluation. By default the scri
   - `recall_at_n.png`
   - qualitative result images
 
-7) Reproducing a saved run
+7) Automatic weight saving
 
-- Each run saves `hyperparameters.json` and weight images. To reproduce, load the saved weights and re-run the evaluation utilities in `vprsnn_evaluation.py`.
+- After every training run, the model weights are automatically saved to the `weights/` directory at the project root.
+- The filename encodes the network's key characteristics for easy identification:
+  ```
+  weights/vprsnn_<dataset>_<N_EXC>exc_<N_IN>in_<EPOCHS>ep_<t_steps>ts_<WTA>wta_<homeo|nohomeo>_<wnorm|nownorm>_<RES>res_seed<SEED>_<TIMESTAMP>.pt
+  ```
+- Each `.pt` file contains the full `state_dict`, a `params` dict with all hyperparameters, and a `timestamp`.
+- You can also explicitly name a checkpoint with `--save-model`:
+  ```bash
+  python core/snn_model.py --save-model my_baseline.pt
+  ```
 
-8) Helpful scripts
+8) Loading a saved model (evaluation only)
+
+- To skip STDP training and go straight to evaluation, load a previously saved checkpoint:
+  ```bash
+  python core/snn_model.py --load-model weights/vprsnn_nordland_400exc_784in_120ep_200ts_hardwta_homeo_wnorm_28res_seed42_20260930_140512.pt
+  ```
+- This works with both auto-saved `weights/` checkpoints and explicit `--save-model` checkpoints.
+
+9) Reproducing a saved run
+
+- Each run saves `hyperparameters.json` and weight images. To reproduce, load the saved weights via `--load-model` and re-run the evaluation.
+
+10) Helpful scripts
 
 - `verify_refactor.py` contains minimal checks and example usage of `RateEncoder` and `torchVPRSNN`.
 
-9) Post-run analysis scripts
+11) Post-run analysis scripts
 
 - `extract_tables_by_time.py`
   - Extracts METHOD/P@100R/R@100P summary rows from `results_*/output.log`

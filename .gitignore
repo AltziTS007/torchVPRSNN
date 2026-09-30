@@ -1,6 +1,7 @@
 **/old/
 archive_code/
 results/
+weights/
 temp/
 media/
 nordland_clean/
@@ -29,3 +30,6 @@ ablation_latency_vs_r100p_oxford.png
 energy_methodology.tex
 tsteps_ablation_results/
 tsteps_ablation_results_oxford/
+MDDRrobots_dataset/
+room_model_v2.pt
+

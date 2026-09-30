@@ -67,6 +67,37 @@ During execution, the script automatically creates a timestamped results directo
 - **Evaluation Directories** (e.g., `Standard/`, `Weighted/`, `Weighted+Prob/`): Contain method-specific performance plots including Distance Matrices, Precision-Recall Curves, Recall@N plots, and illustrative qualitative results comparing matched locations.
 - **Inference Profile**: Generates comprehensive hardware telemetry reporting SNN simulation latency, Sequence Aggregation overhead, sustained FPS, and energy draw per query.
 
+### Automatic Weight Saving
+
+After every training run (STDP or loaded), the model weights are automatically saved to the `weights/` directory at the project root. The filename encodes the key characteristics of the network so each checkpoint is self-documenting:
+
+```
+weights/vprsnn_<dataset>_<N_EXC>exc_<N_IN>in_<EPOCHS>ep_<t_steps>ts_<WTA>wta_<homeo>_<wnorm>_<RES>res_seed<SEED>_<TIMESTAMP>.pt
+```
+
+For example:
+```
+weights/vprsnn_nordland_400exc_784in_120ep_200ts_hardwta_homeo_wnorm_28res_seed42_20260930_140512.pt
+weights/vprsnn_mddrobots_Corridor1_RGB_400exc_784in_120ep_200ts_hardwta_homeo_wnorm_28res_seed42_20260930_140512.pt
+```
+
+Each `.pt` checkpoint contains:
+- `state_dict`: The full model state dictionary (loadable via `--load-model`).
+- `params`: A dictionary of all key hyperparameters (dataset, architecture, STDP rates, etc.).
+- `timestamp`: When the checkpoint was created.
+
+### Saving & Loading Models
+
+In addition to the automatic weight saving, you can use CLI flags for explicit checkpoint management:
+
+```bash
+# Save a named checkpoint (also triggers auto-save to weights/)
+python core/snn_model.py --save-model my_baseline.pt
+
+# Load a previously saved checkpoint (skips STDP training)
+python core/snn_model.py --load-model weights/vprsnn_nordland_400exc_784in_120ep_200ts_hardwta_homeo_wnorm_28res_seed42_20260930_140512.pt
+```
+
 ## Reproducing the Paper Results
 
 This repository is structured to allow full reproducibility of the results reported in *thirteenth_draft.pdf*. Below are the exact commands required to reproduce each table and figure from a clean checkout. 

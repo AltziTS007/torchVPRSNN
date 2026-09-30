@@ -31,6 +31,14 @@ This document summarizes the main modules, classes, and functions in the reposit
 - `snn_model.py`
   - `main()` : End-to-end experiment driver (data loading, STDP training, assignment, evaluation, and visualization).
   - The `params` dictionary near `main()` controls hyperparameters and directories.
+  - **Automatic weight saving**: After every training run, `main()` saves a checkpoint to `weights/` at the project root. The filename encodes key characteristics (dataset, architecture, STDP params, seed, timestamp). Each checkpoint dict contains:
+    - `state_dict`: Full model state dict (compatible with `torchVPRSNN.load_state_dict()`).
+    - `params`: Dict of hyperparameters (dataset, n_in, n_exc, resolution, epochs, t_steps, wta_mode, enable_homeostasis, enable_weight_norm, seed, a_plus, a_minus, thr_e_init, target_rate, thr_eta, descriptor, and optionally room).
+    - `timestamp`: Creation timestamp string (`YYYYMMDD_HHMMSS`).
+  - **CLI flags**:
+    - `--save-model <path>`: Save a named checkpoint (includes assignments and num_classes alongside state_dict).
+    - `--load-model <path>`: Load a checkpoint and skip STDP training.
+
 
 - `utils.py`
   - `Logger(filename)` : redirects `stdout` to a file and terminal.

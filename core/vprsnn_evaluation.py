@@ -10,10 +10,12 @@ This file implements:
 - Retrieval-style metrics (R@100P, P@100R)
 - Visualization utilities
 - Nordland dataset loading and preprocessing
+- MDDRobots indoor dataset loading and preprocessing
 
 IMPORTANT:
 This file assumes:
-- One-to-one correspondence between Spring/Fall images
+- One-to-one correspondence between reference/query images
+  (Spring/Fall for Nordland; train/test traversals for MDDRobots)
 - Single ground-truth place per query
 - No temporal alignment (pure appearance-based VPR)
 """
@@ -114,7 +116,8 @@ def get_standard_assignments(net, encoder, loader, n_exc, n_classes, device="cpu
 # 2. STANDARD VPR EVALUATION
 # ============================================================
 
-def evaluate_vpr(net, encoder, loader, assignments, n_classes, device="cpu", simulate_spillover=False):
+def evaluate_vpr(net, encoder, loader, assignments, n_classes, device='cpu', 
+                 simulate_spillover=False, tolerance=0):
     """
     Evaluates VPR using Standard Assignment inference.
 
@@ -332,7 +335,7 @@ def evaluate_vpr(net, encoder, loader, assignments, n_classes, device="cpu", sim
                 pred = scores.argmax().item()
                 target = yb[b].item()
 
-                correct += int(pred == target)
+                correct += int(abs(pred - target) <= tolerance)
                 total += 1
 
                 all_preds.append(pred)
@@ -440,7 +443,7 @@ def evaluate_vpr(net, encoder, loader, assignments, n_classes, device="cpu", sim
 
 from sklearn.metrics import precision_recall_curve, auc
 
-def _prepare_metrics_data(similarity_matrix, targets):
+def _prepare_metrics_data(similarity_matrix, targets, tolerance=0):
     """
     Prepares data for metrics.py functions.
     metrics.py expects:
@@ -461,7 +464,9 @@ def _prepare_metrics_data(similarity_matrix, targets):
     
     for i, target in enumerate(targets):
         if target < n_refs:
-            GThard[target, i] = 1
+            start = max(0, target - tolerance)
+            end = min(n_refs, target + tolerance + 1)
+            GThard[start:end, i] = 1
             
     return S_in, GThard
 
@@ -549,32 +554,37 @@ def plot_weights(weights, n_exc, n_side=28, n_rows=20, n_cols=20, save_path="wei
     """
     Plots the receptive fields (weights) of the excitatory neurons.
     Weights are expected to be [n_in, n_exc].
-    We reshape each column of 784 to 28x28.
+    Handles 2D square image inputs (e.g. 28x28) and 1D feature descriptors (e.g. Spatial Pyramid 380-D).
     """
-    # Weights: [784, n_exc]
-    # We want to plot n_exc images
-    
-    # Ensure on CPU
     w = weights.cpu().detach().numpy()
-    
-    # Create grid
+    n_in = w.shape[0]
+
+    num_to_plot = min(n_exc, 400)
+    n_cols = int(np.ceil(np.sqrt(num_to_plot)))
+    n_rows = int(np.ceil(num_to_plot / n_cols))
+
     fig, axes = plt.subplots(n_rows, n_cols, figsize=(12, 12))
-    
+
     for i in range(n_rows * n_cols):
-        ax = axes.flat[i]
-        if i < n_exc:
-            # Get weight vector for neuron i
-            # w[:, i] is [784]
-            img = w[:, i].reshape(n_side, n_side)
-            ax.imshow(img, cmap='hot', interpolation='nearest')
+        ax = axes.flat[i] if hasattr(axes, 'flat') else axes
+        if i < num_to_plot and i < n_exc:
+            weight_vec = w[:, i]
+            if n_in == n_side * n_side:
+                img = weight_vec.reshape(n_side, n_side)
+            else:
+                side = int(np.sqrt(n_in))
+                if side * side == n_in:
+                    img = weight_vec.reshape(side, side)
+                else:
+                    img = weight_vec.reshape(1, -1)
+            ax.imshow(img, cmap='hot', interpolation='nearest', aspect='auto')
             ax.axis('off')
         else:
             ax.axis('off')
-            
+
     plt.tight_layout()
     plt.savefig(save_path)
     plt.close()
-    #print(f"Saved Weights visualization to {save_path}")
 
 def plot_neuron_assignments(assignments, avg_rates, n_classes, save_path="neuron_assignments.png"):
     """
@@ -621,22 +631,22 @@ def plot_neuron_assignments(assignments, avg_rates, n_classes, save_path="neuron
     plt.close()
     print(f"Saved Firing Rate Heatmap to {save_path.replace('.png', '_heatmap.png')}")
 
-def calculate_r_at_100p(similarity_matrix, targets):
+def calculate_r_at_100p(similarity_matrix, targets, tolerance=0):
     """
     Calculates Recall at 100% Precision using metrics.py
     """
-    S_in, GThard = _prepare_metrics_data(similarity_matrix, targets)
+    S_in, GThard = _prepare_metrics_data(similarity_matrix, targets, tolerance=tolerance)
     
     # recallAt100precision returns a float (0.0 to 1.0)
     r100p = vpr_metrics.recallAt100precision(S_in, GThard, matching='single')
     
     return r100p * 100.0
 
-def calculate_p_at_100r(similarity_matrix, targets):
+def calculate_p_at_100r(similarity_matrix, targets, tolerance=0):
     """
     Calculates Precision at 100% Recall using metrics.py createPR
     """
-    S_in, GThard = _prepare_metrics_data(similarity_matrix, targets)
+    S_in, GThard = _prepare_metrics_data(similarity_matrix, targets, tolerance=tolerance)
     
     P, R = vpr_metrics.createPR(S_in, GThard, matching='single', n_thresh=200)
     P = np.array(P)
@@ -682,7 +692,10 @@ def visualize_qualitative_results(query_ds, database_ds, assignments, weights, p
 
     # helper to get raw image
     def get_raw_image(ds, idx):
-        path = os.path.join(ds.dir_path, ds.image_files[idx])
+        if hasattr(ds, 'samples'):
+            path = ds.samples[idx][0]
+        else:
+            path = os.path.join(ds.dir_path, ds.image_files[idx])
         return Image.open(path).convert("RGB")
         
     # Find indices
@@ -745,21 +758,28 @@ def visualize_qualitative_results(query_ds, database_ds, assignments, weights, p
         plt.suptitle(f"{title}: Query P{place_id} -> Retrieved P{pred_place_id}\n({n_assigned} neurons assigned to P{pred_place_id})", fontsize=16)
         
         # Row 1: Proc
+        if query_proc.ndim == 1:
+            query_proc = query_proc.reshape(1, -1)
+        if retrieved_proc.ndim == 1:
+            retrieved_proc = retrieved_proc.reshape(1, -1)
+        if gt_proc.ndim == 1:
+            gt_proc = gt_proc.reshape(1, -1)
+
         # Query
         ax = plt.subplot(n_rows, n_cols, 1)
-        ax.imshow(query_proc, cmap='gray')
+        ax.imshow(query_proc, cmap='gray', aspect='auto')
         ax.set_title(f"Query (Input)\n{query_fname}")
         ax.axis('off')
 
         # Retrieved (Database)
         ax = plt.subplot(n_rows, n_cols, 2)
-        ax.imshow(retrieved_proc, cmap='gray')
+        ax.imshow(retrieved_proc, cmap='gray', aspect='auto')
         ax.set_title(f"Retrieved (Database)\n{retrieved_fname}")
         ax.axis('off')
         
         # Ground Truth (Database)
         ax = plt.subplot(n_rows, n_cols, 3)
-        ax.imshow(gt_proc, cmap='gray')
+        ax.imshow(gt_proc, cmap='gray', aspect='auto')
         ax.set_title(f"Ground Truth (Database)\n{gt_fname}")
         ax.axis('off')
         
@@ -784,10 +804,15 @@ def visualize_qualitative_results(query_ds, database_ds, assignments, weights, p
         
         # Row 3: Neurons
         if n_neurons_show > 0:
+            n_in = weights_np.shape[0]
+            side = int(np.sqrt(n_in))
             for k, nid in enumerate(neurons_to_show):
                 ax = plt.subplot(n_rows, n_cols, 2*n_cols + k + 1)
-                w_img = weights_np[:, nid].reshape(28, 28)
-                ax.imshow(w_img, cmap='hot')
+                if side * side == n_in:
+                    w_img = weights_np[:, nid].reshape(side, side)
+                else:
+                    w_img = weights_np[:, nid].reshape(1, -1)
+                ax.imshow(w_img, cmap='hot', aspect='auto')
                 ax.set_title(f"Neuron {nid}")
                 ax.axis('off')
         else:
@@ -857,7 +882,7 @@ class PatchNormalization:
     Applies Patch Normalization to a tensor image.
     Splits the image into patches and Min-Max normalizes each patch.
     """
-    def __init__(self, patch_size=7): # 28x28 image -> 7x7 patches = 16 patches
+    def __init__(self, patch_size=7):
         self.patch_size = patch_size
 
     def __call__(self, img_tensor):
@@ -925,6 +950,123 @@ class CLAHE:
         
         # Convert back to PIL
         return Image.fromarray(img_clahe)
+
+
+class DoGTransform:
+    """
+    Difference-of-Gaussians preprocessing.
+    Mimics retinal processing: enhances edges, removes flat illumination.
+    Replaces PatchNormalization in the transform pipeline.
+    """
+    def __init__(self, sigma1=1.0, sigma2=2.0, resolution=28):
+        self.sigma1 = sigma1
+        self.sigma2 = sigma2
+        self.resolution = resolution
+
+    def __call__(self, pil_image):
+        # Resize + grayscale
+        img = pil_image.convert('L').resize((self.resolution, self.resolution))
+        img_np = np.array(img, dtype=np.float32) / 255.0
+
+        g1 = cv2.GaussianBlur(img_np, (0, 0), self.sigma1)
+        g2 = cv2.GaussianBlur(img_np, (0, 0), self.sigma2)
+        dog = g1 - g2
+
+        # Normalize to [0, 1]
+        dog = dog - dog.min()
+        dmax = dog.max()
+        if dmax > 0:
+            dog = dog / dmax
+
+        return torch.FloatTensor(dog).unsqueeze(0)  # [1, H, W]
+
+
+class SpatialPyramidDescriptor:
+    """
+    Multi-level spatial pyramid + HOG descriptor.
+    
+    Captures WHERE features are in the image (spatial layout)
+    and WHAT types of edges dominate (orientation histograms).
+    
+    This is far more discriminative for indoor scenes than raw pixels
+    because rooms differ in spatial layout (bright ceiling vs dark floor,
+    edge-rich walls vs smooth floors) rather than pixel-level patterns.
+    
+    Output is a 1D feature vector normalized to [0, 1].
+    """
+    def __init__(self, working_res=56, pyramid_levels=(2, 4, 8),
+                 hog_cells=4, hog_bins=8):
+        self.working_res = working_res
+        self.pyramid_levels = pyramid_levels
+        self.hog_cells = hog_cells
+        self.hog_bins = hog_bins
+
+        # Pre-compute output dimension
+        self.n_features = 0
+        for level in pyramid_levels:
+            self.n_features += level * level * 3  # mean, std, edge_density per cell
+        self.n_features += hog_cells * hog_cells * hog_bins  # HOG
+
+    def __call__(self, pil_image):
+        # Resize and convert to grayscale numpy
+        img = pil_image.convert('L').resize((self.working_res, self.working_res))
+        img_np = np.array(img, dtype=np.float32) / 255.0
+
+        # Compute edge magnitude map (Sobel)
+        gx = cv2.Sobel(img_np, cv2.CV_32F, 1, 0, ksize=3)
+        gy = cv2.Sobel(img_np, cv2.CV_32F, 0, 1, ksize=3)
+        mag = np.sqrt(gx ** 2 + gy ** 2)
+        angle = np.arctan2(gy, gx)  # [-pi, pi]
+        angle_norm = (angle + np.pi) / (2 * np.pi)  # [0, 1]
+
+        features = []
+
+        # ---- Spatial pyramid: mean, std, edge_density per cell ----
+        for level in self.pyramid_levels:
+            cell_h = self.working_res // level
+            cell_w = self.working_res // level
+            for i in range(level):
+                for j in range(level):
+                    r0, r1 = i * cell_h, (i + 1) * cell_h
+                    c0, c1 = j * cell_w, (j + 1) * cell_w
+                    cell = img_np[r0:r1, c0:c1]
+                    cell_edge = mag[r0:r1, c0:c1]
+                    features.append(cell.mean())
+                    features.append(cell.std())
+                    features.append(cell_edge.mean())
+
+        # ---- HOG: orientation histogram per cell ----
+        cell_h = self.working_res // self.hog_cells
+        cell_w = self.working_res // self.hog_cells
+        for i in range(self.hog_cells):
+            for j in range(self.hog_cells):
+                r0, r1 = i * cell_h, (i + 1) * cell_h
+                c0, c1 = j * cell_w, (j + 1) * cell_w
+                cell_mag = mag[r0:r1, c0:c1]
+                cell_ang = angle_norm[r0:r1, c0:c1]
+
+                hist = np.zeros(self.hog_bins, dtype=np.float32)
+                for b in range(self.hog_bins):
+                    lo = b / self.hog_bins
+                    hi = (b + 1) / self.hog_bins
+                    mask = (cell_ang >= lo) & (cell_ang < hi)
+                    hist[b] = cell_mag[mask].sum()
+
+                total = hist.sum()
+                if total > 0:
+                    hist /= total
+                features.extend(hist.tolist())
+
+        features = np.array(features, dtype=np.float32)
+
+        # Per-feature normalization to [0, 1]
+        fmin = features.min()
+        fmax = features.max()
+        if fmax > fmin:
+            features = (features - fmin) / (fmax - fmin)
+
+        return torch.FloatTensor(features)  # [D]
+
 
 def check_dataset_alignment(ds1, ds2):
     """
@@ -1008,19 +1150,20 @@ def get_oxford_10m_subset(sun_csv_path, sun_ins_path):
 
     return sampled_frames
 
-def get_nordland_loaders(train_path, test_path, batch_size=64, max_samples=None, start_idx=0, shuffle_train=True, oxford_10m_sampling=False):
+def get_nordland_loaders(train_path, test_path, batch_size=64, max_samples=None, start_idx=0, shuffle_train=True, oxford_10m_sampling=False, resolution=28):
     """
     Creates loaders.
     train_path can be a string or a list of strings (datasets will be concatenated).
     """
     
-    # Resize to 28x28 for the provided MNIST network architecture
-    # Patch Normalization + CLAHE added
+    # Resize to given resolution (default 28x28)
+    # Patch Normalization scales patch size to maintain 16 patches (4x4)
+    patch_size = resolution // 4
     transform = transforms.Compose([
-        transforms.Resize((28, 28)), 
+        transforms.Resize((resolution, resolution)), 
         transforms.Grayscale(),
         transforms.ToTensor(),
-        PatchNormalization(patch_size=7)
+        PatchNormalization(patch_size=patch_size)
     ])
     
     valid_files = None
@@ -1098,12 +1241,208 @@ def get_nordland_loaders(train_path, test_path, batch_size=64, max_samples=None,
     # Return num_classes based on the logical places (min_len)
     return train_loader, test_loader, min_len
 
+def get_mddrobots_loaders(dataset_root, room_name, batch_size=64, max_samples=None,
+                          start_idx=0, shuffle_train=True, frame_skip=4, resolution=28):
+    """
+    Creates DataLoaders for the MDDRobots indoor VPR dataset.
+
+    MDDRobots has 9 rooms, each with separate train/test traversals.
+    Images are sequentially numbered (00000000.png, 00000001.png, ...)
+    providing Nordland-style 1:1 correspondence within each room.
+
+    Frame-skip subsampling takes every Nth frame to reduce visual
+    overlap between consecutive places (analogous to Oxford 10m sampling).
+
+    Args:
+        dataset_root (str): Path to MDDRobots_dataset/ directory.
+        room_name (str): Room subdirectory name (e.g., 'Corridor1_RGB').
+        batch_size (int): Batch size for DataLoaders.
+        max_samples (int or None): Maximum number of places to use.
+        start_idx (int): Starting index into the (subsampled) file list.
+        shuffle_train (bool): Whether to shuffle the training DataLoader.
+        frame_skip (int): Take every Nth frame (1 = no skip, 4 = every 4th).
+        resolution (int): Image resolution (default 28).
+
+    Returns:
+        train_loader: DataLoader for the reference (train) traversal.
+        test_loader: DataLoader for the query (test) traversal.
+        num_classes (int): Number of aligned places.
+    """
+    train_path = os.path.join(dataset_root, "DataSet_GOPRO_RGB_train", room_name)
+    test_path = os.path.join(dataset_root, "DataSet_GOPRO_RGB_test1", room_name)
+
+    if not os.path.isdir(train_path):
+        raise ValueError(f"MDDRobots train path not found: {train_path}")
+    if not os.path.isdir(test_path):
+        raise ValueError(f"MDDRobots test path not found: {test_path}")
+
+    # Same preprocessing pipeline as Nordland
+    patch_size = resolution // 4
+    transform = transforms.Compose([
+        transforms.Resize((resolution, resolution)),
+        transforms.Grayscale(),
+        transforms.ToTensor(),
+        PatchNormalization(patch_size=patch_size)
+    ])
+
+    print(f"Loading MDDRobots room: {room_name}")
+    print(f"  Train path: {train_path}")
+    print(f"  Test path:  {test_path}")
+
+    # Load both traversals using the existing NordlandDataset class
+    train_ds = NordlandDataset(dir_path=train_path, transform=transform)
+    test_ds = NordlandDataset(dir_path=test_path, transform=transform)
+    
+    # Same subsampling as before
+    # ...
+    # Wait, instead of replacing everything, I'll just append to the end.
 
 
+    print(f"  Train images: {len(train_ds)}, Test images: {len(test_ds)}")
 
+    # Find common filenames for alignment (train has 600, test has 500)
+    common_files = sorted(
+        set(train_ds.image_files).intersection(set(test_ds.image_files))
+    )
 
+    if len(common_files) == 0:
+        raise ValueError("No common images found between train and test traversals!")
 
+    print(f"  Aligned images (common filenames): {len(common_files)}")
 
+    # Apply frame-skip subsampling: take every Nth frame
+    if frame_skip > 1:
+        common_files = common_files[::frame_skip]
+        print(f"  After frame-skip (every {frame_skip}th): {len(common_files)} places")
 
+    # Apply start_idx and max_samples
+    if max_samples is not None:
+        print(f"  Limiting to {max_samples} samples starting from index {start_idx}.")
+        common_files = common_files[start_idx:start_idx + max_samples]
+    else:
+        common_files = common_files[start_idx:]
 
+    num_classes = len(common_files)
+    print(f"  Final place count: {num_classes}")
 
+    # Update datasets to use only the selected files
+    train_ds.image_files = common_files.copy()
+    test_ds.image_files = common_files.copy()
+
+    print(f"Creating Loaders (Shuffle Train: {shuffle_train})...")
+    train_loader = torch.utils.data.DataLoader(
+        train_ds, batch_size=batch_size, shuffle=shuffle_train
+    )
+    test_loader = torch.utils.data.DataLoader(
+        test_ds, batch_size=batch_size, shuffle=False
+    )
+
+    return train_loader, test_loader, num_classes
+
+class RoomClassificationDataset(Dataset):
+    """
+    Custom Dataset for room-level classification.
+    Given a root directory (e.g., DataSet_GOPRO_RGB_train), it finds all room subdirectories.
+    Each room gets a unique class label (0 to num_rooms - 1).
+    All images within a room are assigned that room's class label.
+    """
+    def __init__(self, root_dir, transform=None, frame_skip=1, max_samples_per_room=None):
+        self.root_dir = root_dir
+        self.transform = transform
+        self.samples = [] # list of (image_path, class_label)
+        
+        valid_exts = {".png", ".jpg", ".jpeg", ".bmp"}
+        
+        # Get all room directories, sorted so train and test have the same class IDs
+        self.rooms = sorted([d for d in os.listdir(root_dir) if os.path.isdir(os.path.join(root_dir, d))])
+        
+        for class_id, room_name in enumerate(self.rooms):
+            room_path = os.path.join(root_dir, room_name)
+            files = sorted([f for f in os.listdir(room_path) if os.path.splitext(f)[1].lower() in valid_exts])
+            
+            # Apply frame skip
+            files = files[::frame_skip]
+            
+            # Apply max_samples
+            if max_samples_per_room is not None:
+                files = files[:max_samples_per_room]
+                
+            for f in files:
+                self.samples.append((os.path.join(room_path, f), class_id))
+                
+        if len(self.samples) == 0:
+            raise ValueError(f"No images found in {root_dir}")
+
+    def __len__(self):
+        return len(self.samples)
+
+    @property
+    def image_files(self):
+        # Extract just the basenames to match the behavior of NordlandDataset
+        return [os.path.basename(path) for path, _ in self.samples]
+
+    def __getitem__(self, idx):
+        img_path, class_label = self.samples[idx]
+        
+        try:
+            image = Image.open(img_path).convert('RGB')
+        except Exception as e:
+            print(f"Error loading {img_path}: {e}")
+            image = Image.new('RGB', (28, 28))
+
+        if self.transform:
+            image = self.transform(image)
+            
+        return image, class_label
+
+def get_mddrobots_room_loaders(dataset_root, batch_size=64, max_samples=None,
+                               shuffle_train=True, frame_skip=4, resolution=28,
+                               descriptor='raw'):
+    """
+    Creates DataLoaders for MDDRobots room classification.
+    
+    Args:
+        descriptor: 'raw' (default pixel pipeline), 'dog' (DoG preprocessing),
+                    'spatial_pyramid' (spatial pyramid + HOG descriptor)
+    Returns:
+        train_loader, test_loader, num_classes, n_in
+    """
+    train_root = os.path.join(dataset_root, "DataSet_GOPRO_RGB_train")
+    test_root = os.path.join(dataset_root, "DataSet_GOPRO_RGB_test1")
+
+    if not os.path.isdir(train_root) or not os.path.isdir(test_root):
+        raise ValueError(f"MDDRobots roots not found: {train_root} or {test_root}")
+
+    if descriptor == 'dog':
+        transform = DoGTransform(sigma1=1.0, sigma2=2.0, resolution=resolution)
+        n_in = resolution * resolution
+        print(f"Using DoG descriptor (N_IN={n_in})")
+    elif descriptor == 'spatial_pyramid':
+        sp = SpatialPyramidDescriptor(working_res=56)
+        transform = sp
+        n_in = sp.n_features
+        print(f"Using Spatial Pyramid descriptor (N_IN={n_in})")
+    else:
+        patch_size = resolution // 4
+        transform = transforms.Compose([
+            transforms.Resize((resolution, resolution)),
+            transforms.Grayscale(),
+            transforms.ToTensor(),
+            PatchNormalization(patch_size=patch_size)
+        ])
+        n_in = resolution * resolution
+        print(f"Using raw pixel descriptor (N_IN={n_in})")
+
+    print("Loading MDDRobots for Room-Level Classification...")
+    train_ds = RoomClassificationDataset(train_root, transform=transform, 
+                                         frame_skip=frame_skip, max_samples_per_room=max_samples)
+    test_ds = RoomClassificationDataset(test_root, transform=transform, 
+                                        frame_skip=frame_skip, max_samples_per_room=max_samples)
+                                        
+    print(f"  Found {len(train_ds.rooms)} rooms: {train_ds.rooms}")
+    print(f"  Train images: {len(train_ds)}, Test images: {len(test_ds)}")
+
+    train_loader = torch.utils.data.DataLoader(train_ds, batch_size=batch_size, shuffle=shuffle_train)
+    test_loader = torch.utils.data.DataLoader(test_ds, batch_size=batch_size, shuffle=False)
+
+    return train_loader, test_loader, len(train_ds.rooms), n_in
